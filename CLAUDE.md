@@ -25,6 +25,14 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 - R2 for attachments and backups
 - Zimbra IMAP/SMTP integration (mail.allcheckservices.com)
 
+## Architecture decision — 17 September 2026
+
+Mail transport is **Resend**, not IMAP; the app runs on **Cloudflare Workers**. This
+supersedes the IMAP-polling design in `specs/001-email-ticketing/plan.md` and T010 —
+a Worker cannot reach `mail.allcheckservices.com` on any port, so polling cannot work.
+Read the "Architecture decision" section of `AGENTS.md` and `docs/stack-validation.md`
+before touching ingestion, and do not implement IMAP polling.
+
 ## Essential documents (read in order)
 
 1. `AGENTS.md` — required engineering workflow and boundaries

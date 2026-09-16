@@ -2,6 +2,46 @@
 
 Read docs/engineering-standards.md, docs/PRD.md, docs/brand.md and the feature specification before modifying application behavior. Keep the approved burnt-orange visual identity. Ask one question at a time when a product decision is required.
 
+## Architecture decision — 17 September 2026, read before implementing ingestion
+
+Mail transport is **Resend**, not IMAP. The application runs on **Cloudflare Workers**.
+This supersedes the IMAP-polling design still written in
+`specs/001-email-ticketing/plan.md` and T010. Evidence and detail:
+`docs/stack-validation.md`.
+
+**Do not implement IMAP polling.** It cannot work: a Cloudflare Worker cannot open a
+connection to `mail.allcheckservices.com` on 993, 465 or 587. All three time out, as does
+the bare IP, while `imap.gmail.com:993` connects from the same Worker in 68 ms and the
+development machine reaches the same address fine. The mail host drops Cloudflare's
+traffic. No code change alters this.
+
+What replaces it, proved working end to end on 17 September 2026:
+
+1. Resend delivers `email.received` to a webhook within seconds of arrival.
+2. `tools/inbound-webhook/` verifies the Svix signature and returns 2xx.
+3. The body, full headers and attachment URLs come from a **second** call to
+   `GET /emails/receiving/{email_id}`. The webhook payload carries metadata only — no
+   body, and no `In-Reply-To` or `References`, so a ticket cannot be threaded from the
+   webhook alone.
+
+Consequences that change the requirements, not yet applied to the PRD/spec/tasks:
+
+- R01: mail arrives at `support@tickets.allcheckservices.com`. Whether employees use that
+  address or Zimbra forwards the old one to it is an open product decision.
+- R02: "poll every two minutes" becomes delivery on arrival.
+- T010: mailbox polling, IMAP leases, UIDVALIDITY reconciliation and the UID launch
+  cutoff have no equivalent. R27's launch boundary is trivial — the subdomain mailbox has
+  no pre-launch history.
+- Idempotency keys on `email_id`: Svix retries until it gets a 2xx, so one email can
+  arrive more than once and must produce one ticket.
+- R12: the 5 MB limit is enforced against bytes actually fetched, since attachments
+  arrive as download URLs.
+
+Still unproved on this stack: **sending has never been tested**, `email.bounced` and
+`email.failed` are not subscribed yet (R15 needs them), and Workers WebCrypto refuses
+PBKDF2 above 100,000 iterations, which blocks R06 until Argon2id/bcrypt via WebAssembly
+is chosen or the cap is explicitly accepted.
+
 ## Required engineering workflow
 
 - New behavior and bug fixes are test-first: write a meaningful failing behavior/regression test, observe the intended failure, implement, then refactor with tests passing. Do not describe historical prototype tests as TDD. Pure visual changes use visual/accessibility checks rather than implementation-mirroring tests.
