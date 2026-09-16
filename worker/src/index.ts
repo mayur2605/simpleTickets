@@ -15,7 +15,7 @@
  *   mailbox's current uidNext and nothing is imported, so pre-existing mail
  *   never becomes a ticket.
  */
-import { readNewMail } from "./imap";
+import { readNewMail, readMailboxMarkers } from "./imap";
 import { isApprovedSender, extractAddress } from "./domain";
 import {
   readCheckpoint,
@@ -47,7 +47,7 @@ async function ingest(env: Env): Promise<RunSummary> {
 
   // First run: adopt the mailbox as-is and import nothing (R27).
   if (existing === null) {
-    const probe = await readNewMail(env.GMAIL_USER, env.GMAIL_APP_PASSWORD, 2 ** 31);
+    const probe = await readMailboxMarkers(env.GMAIL_USER, env.GMAIL_APP_PASSWORD);
     await writeCheckpoint(env.DB, {
       uidValidity: probe.uidValidity,
       lastUid: probe.uidNext - 1,
@@ -167,6 +167,15 @@ export default {
            (SELECT COUNT(*) FROM ingest_log) AS examined`,
       ).first<{ tickets: number; messages: number; examined: number }>();
       return Response.json({ checkpoint, counts });
+    }
+
+    if (url.pathname === "/diag") {
+      // Where did the mail actually land? Gmail files unknown senders in Spam,
+      // which is a different folder and invisible to an INBOX-only poller.
+      const { listFolders } = await import("./imap");
+      return Response.json(
+        await listFolders(env.GMAIL_USER, env.GMAIL_APP_PASSWORD),
+      );
     }
 
     if (url.pathname === "/poll" && request.method === "POST") {

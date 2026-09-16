@@ -3,6 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2026-09-16"
 compatibility_flags = ["nodejs_compat"]
 
+# No public URL: this worker is driven by cron, not by HTTP. The admin routes
+# in src/index.ts are reachable through `wrangler dev --remote` when needed.
+# Set true once a workers.dev subdomain is registered for the account.
+workers_dev = true
+
 [[d1_databases]]
 binding = "DB"
 database_name = "simpletickets"

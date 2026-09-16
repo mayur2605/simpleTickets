@@ -204,6 +204,51 @@ create tickets only for UIDs at or above it. UIDVALIDITY still has to be stored 
 compared, because Gmail can in principle renumber, but the reconciliation path is no
 longer the delicate part of ingestion.
 
+## First ticket created from a real email, 17 September 2026
+
+A message from a company address became a ticket in D1: subject, requester, status and
+Message-ID stored, the UID recorded in `ingest_log`. Three further polls created nothing,
+so idempotency holds. The launch cutoff behaved: five pre-existing messages were never
+imported.
+
+### Two things do not work yet
+
+**Message bodies are not ingested.** `bodyParts` stalls the socket under
+`nodejs_compat` — `Socket timeout`, every time, even for one small message. Connect,
+authenticate, `mailboxOpen` and envelope fetch all work; reading IMAP literals does not.
+Tickets therefore carry subject and sender but `body_len` 0, which is not good enough to
+ship. Untried: `client.download()` and `source: true` both use the same literal-reading
+path and will probably fail the same way; a host with real Node would not have the
+problem at all.
+
+The earlier probe proved connect and `mailboxOpen`, and was taken as proving IMAP works.
+It did not prove fetching. Worth remembering when the next component is declared proven.
+
+**Cron does not fire.** The trigger is registered (`*/2 * * * *`, visible in the deploy
+output and the dashboard) but there have been zero scheduled invocations. Every run so
+far has been a manual POST to `/poll`. Unexplained.
+
+### Gmail files company mail as spam, because SPF is broken
+
+The first test email landed in `[Gmail]/Spam`, not INBOX, and was only ingested after
+being marked not-spam by hand.
+
+`allcheckservices.com` publishes **two** SPF records, which RFC 7208 makes a permanent
+error: receivers treat the domain as having no valid SPF. Gmail sees a failed check and
+files the mail as spam. This affects all company mail, not just this system.
+
+The fix is to delete both TXT records and publish one merged record:
+
+```
+v=spf1 +a +mx ip4:49.50.108.191 ip4:49.50.108.192 ip4:103.10.190.17 ip4:103.10.190.18
+  ip4:103.10.190.19 ip4:103.10.190.12 ip4:103.10.190.13 include:_spf.mail.hostinger.com ~all
+```
+
+Polling the Spam folder was rejected as a workaround: it would ingest real spam as
+tickets and hide a genuine problem with the mail domain. But it does raise a design
+requirement — mail that silently never becomes a ticket is worse than a visible failure,
+so ingestion needs to surface gaps rather than sit quietly.
+
 ## Accepted architecture, 17 September 2026
 
 The user chose **Cloudflare Workers for the application and Resend for mail transport**,
