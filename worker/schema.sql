@@ -16,9 +16,14 @@ CREATE TABLE IF NOT EXISTS tickets (
   status      TEXT NOT NULL DEFAULT 'New',
   priority    TEXT NOT NULL DEFAULT 'Normal',
   owner       TEXT,
+  -- When a first response is due (R03: 4 working hours; Sunday arrivals are due
+  -- Monday noon). NULL means the ticket predates deadlines, never "overdue".
+  response_due TEXT,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS tickets_response_due ON tickets (response_due);
 
 CREATE TABLE IF NOT EXISTS messages (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -40,6 +40,8 @@ export async function alreadyIngested(db: D1Database, uid: number): Promise<bool
 }
 
 export interface NewTicket {
+  /** ISO timestamp for the first-response deadline (R03). */
+  responseDue: string;
   uid: number;
   subject: string;
   requester: string;
@@ -62,10 +64,10 @@ export async function createTicket(
   const now = new Date().toISOString();
   const ticket = await db
     .prepare(
-      `INSERT INTO tickets (subject, requester, status, priority, created_at, updated_at)
-       VALUES (?, ?, 'New', 'Normal', ?, ?) RETURNING id`,
+      `INSERT INTO tickets (subject, requester, status, priority, response_due, created_at, updated_at)
+       VALUES (?, ?, 'New', 'Normal', ?, ?, ?) RETURNING id`,
     )
-    .bind(input.subject, input.requester, now, now)
+    .bind(input.subject, input.requester, input.responseDue, now, now)
     .first<{ id: number }>();
   if (ticket === null) throw new Error("Ticket insert returned no id.");
 
@@ -461,6 +463,7 @@ export interface TicketRow {
   status: string;
   priority: string;
   owner: string | null;
+  response_due: string | null;
   created_at: string;
   updated_at: string;
   messages: number;
@@ -471,7 +474,7 @@ export async function listTickets(db: D1Database, limit = 100): Promise<TicketRo
   const rows = await db
     .prepare(
       `SELECT t.id, t.subject, t.requester, t.status, t.priority, t.owner,
-              t.created_at, t.updated_at,
+              t.response_due, t.created_at, t.updated_at,
               (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS messages
          FROM tickets t
         ORDER BY t.updated_at DESC, t.id DESC
@@ -498,7 +501,7 @@ export async function getTicket(db: D1Database, id: number): Promise<TicketDetai
   const ticket = await db
     .prepare(
       `SELECT t.id, t.subject, t.requester, t.status, t.priority, t.owner,
-              t.created_at, t.updated_at,
+              t.response_due, t.created_at, t.updated_at,
               (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS messages
          FROM tickets t WHERE t.id = ?`,
     )

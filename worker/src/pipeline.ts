@@ -16,6 +16,11 @@
  *   never becomes a ticket.
  */
 import { readNewMail, readMailboxMarkers } from "./imap";
+// The one business-calendar service (docs/engineering-standards.md). Imported
+// from the prototype package rather than copied: two implementations of the
+// deadline rules would drift, and the UI would eventually show a different
+// deadline from the one the system enforces.
+import { responseDeadline } from "../../prototype/src/domain/business-calendar";
 import { isApprovedSender, extractAddress } from "./domain";
 import {
   readCheckpoint,
@@ -202,6 +207,10 @@ export async function ingest(env: Env): Promise<RunSummary> {
         requester,
         body: message.body,
         messageId: message.messageId,
+        // R03: four working hours, Mon-Sat 09:00-18:00 Asia/Kolkata, with a
+        // Sunday arrival due Monday noon. Anchored to when WE received it, not
+        // to the Date header, which the sender controls.
+        responseDue: responseDeadline(new Date()).toISOString(),
       },
       // R02: the acknowledgement is queued, never sent inline. Sending here
       // would put an SMTP round trip inside the ingestion loop, where a slow
