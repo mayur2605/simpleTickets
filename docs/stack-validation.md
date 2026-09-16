@@ -131,9 +131,32 @@ expires refresh tokens after seven days — which would silently stop ingestion 
 So the workable path is App Password plus IMAP, on Workers, with no VPS and no Workspace
 seat. Cost: nothing.
 
-One open question before building: whether `imapflow` runs under `nodejs_compat`, or
-whether a minimal IMAP client has to be written by hand. The probe proves the transport;
-it does not prove a library works.
+### imapflow runs on Workers under nodejs_compat
+
+Answered, and favourably. A Worker built with `compatibility_flags = ["nodejs_compat"]`
+loaded `imapflow`, opened TLS to Gmail and completed a LOGIN exchange with deliberately
+invalid credentials. The server's own rejection came back intact:
+
+```
+authenticationFailed: true
+serverResponseCode:   AUTHENTICATIONFAILED
+response:             3 NO [AUTHENTICATIONFAILED] Invalid credentials (Failure)
+```
+
+Reaching that response requires the module to load, the socket shims to work, the
+greeting to be read, CAPABILITY and LOGIN to be written, and the tagged reply to be
+parsed. With a real App Password it authenticates.
+
+- Bundle: 1679 KiB raw, 437 KiB gzipped — within limits.
+- Cost: **8 ms CPU**, 1541 ms wall. Network wait is excluded from Workers CPU
+  accounting, so an IMAP session is nearly free in CPU terms and fits even a strict
+  10 ms budget. Polling is I/O-bound, not CPU-bound.
+
+No hand-written IMAP client is needed. `imapflow` and `nodemailer` are the same
+libraries already proven against a live server by `tools/mail-check/check.mjs`.
+
+Not yet proven: long-lived connections and IDLE under the shims. Short poll-and-close
+cycles are what R02 needs, and that is what was tested.
 
 ## Accepted architecture, 17 September 2026
 
