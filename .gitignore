@@ -10,4 +10,5 @@ test-results/
 prototype/*-preview.png
 
 # Local probe token for the throwaway runtime-check worker
-tools/runtime-check/.probe-token
+.probe-token
+*.probe-token
