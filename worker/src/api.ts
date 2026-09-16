@@ -21,6 +21,7 @@ import {
 import { buildReply } from "./reply";
 import { transitionRule, STATUSES, type Status } from "./transitions";
 import { responseState } from "./overdue";
+import { hashPassword, verifyPassword, TOTAL_ITERATIONS, ROUNDS } from "./password";
 import type { Env } from "./pipeline";
 
 export async function handleApi(url: URL, request: Request, env: Env): Promise<Response> {
@@ -206,6 +207,34 @@ export async function handleApi(url: URL, request: Request, env: Env): Promise<R
     }
 
     return Response.json({ error: "Method not allowed" }, { status: 405 });
+  }
+
+  // Proves the password KDF works on THIS runtime with these parameters, and
+  // reports what it costs. Workers caps a single PBKDF2 call at 100,000
+  // iterations, so the chained scheme has to be measured here rather than
+  // trusted because it passed under Node. Hashes a throwaway random string; no
+  // real password is involved.
+  if (url.pathname === "/api/kdf-selftest") {
+    const sample = crypto.randomUUID();
+    const started = Date.now();
+    const stored = await hashPassword(sample);
+    const hashedMs = Date.now() - started;
+
+    const verifyStarted = Date.now();
+    const accepted = await verifyPassword(sample, stored);
+    const rejected = await verifyPassword(`${sample}x`, stored);
+    const verifyMs = Date.now() - verifyStarted;
+
+    return Response.json({
+      scheme: stored.split("$")[0],
+      rounds: ROUNDS,
+      totalIterations: TOTAL_ITERATIONS,
+      hashedMs,
+      verifyMs,
+      correctAccepted: accepted,
+      wrongRejected: !rejected,
+      ok: accepted && !rejected,
+    });
   }
 
   return Response.json({ error: "No such endpoint" }, { status: 404 });
