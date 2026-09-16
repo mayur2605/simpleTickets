@@ -1,0 +1,6 @@
+name = "simpletickets-inbound"
+main = "src/worker.ts"
+compatibility_date = "2026-09-16"
+
+# RESEND_WEBHOOK_SECRET is NOT stored here. Set it as a deployment secret:
+#   npx wrangler secret put RESEND_WEBHOOK_SECRET
