@@ -6,7 +6,7 @@ Read `AGENTS.md` and `docs/engineering-standards.md` first — they are the bind
 
 ## Project overview
 
-SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works through a dashboard or email. Current status: interactive frontend prototype with an enforced quality gate; production backend not implemented.
+SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it. Current status: interactive frontend prototype with an enforced quality gate; production backend not implemented.
 
 ## Architecture
 
@@ -40,7 +40,7 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 11. `docs/brand.md` — current palette, typography, contrast measurements
 12. `docs/ui-direction.md` — UI decisions and prototype instructions
 
-**Traceability:** PRD `R01`–`R27` are the canonical IDs. Spec acceptance scenarios cite them; tasks `T001`–`T028` implement them. A requirement change touches all four documents plus `docs/foundation.md` if a boundary moves.
+**Traceability:** PRD `R01`–`R28` are the canonical IDs. Spec acceptance scenarios cite them; tasks `T001`–`T028` implement them. A requirement change touches all four documents plus `docs/foundation.md` if a boundary moves.
 
 **Document age matters.** `docs/brand.md` supersedes the earlier navy/blue description in the first half of `docs/ui-direction.md`. `docs/stack-validation.md` supersedes the PRD's "Open points" on mail verification. When documents disagree, the later evidence document wins — and fix the stale one.
 
@@ -48,14 +48,18 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 
 ## Key constraints
 
+These are product rules from the PRD, not descriptions of working code. The dashboard-only IT workflow, the notification set, the delivery-gated transitions, manual closure, the bounce pause and account-disabling redistribution were approved on 16 September 2026 and none of them is implemented — see the PRD's “Approved 16 September 2026 — not implemented” section.
+
 - **Email domain:** Only `@allcheckservices.com` senders to `support@allcheckservices.com`
 - **Work calendar:** Mon–Sat, 09:00–18:00 Asia/Kolkata (UTC+5:30)
 - **Response deadline:** 4 working hours; Sunday messages due Monday 12:00
 - **Assignment:** Fewest open tickets among available staff; round robin for ties
-- **Statuses:** New, In Progress, Waiting for Employee, Resolved (auto-closes after 72h), Closed
+- **Statuses:** New, In Progress, Waiting for Employee, Resolved, Closed
+- **Delivery-gated transitions (R28):** Waiting for Employee and Resolved take effect only when the outgoing mail server accepts the required public reply; until then status, deadlines and reminders are unchanged. The 72-hour auto-close clock starts at that acceptance. IT may also close a Resolved ticket manually, and either closure route leaves the ticket Resolved until the closure email is accepted. A later resolution bounce alerts assignee and admin and pauses auto-close until delivery is fixed.
 - **Attachments:** 5 MB total per email
 - **Backups:** Daily at 02:00 IST, 30-day retention
 - **Staff availability:** Admin-only control; unavailable staff have tickets redistributed
+- **Account disabling:** Admin-only; ends dashboard access and redistributes open tickets by the same assignment rules. Resolved/Closed tickets keep their historical owner
 
 ## Commands
 
@@ -121,7 +125,7 @@ Hooks in `.githooks/` enforce part of this automatically — enable them once pe
 
 **Spec Kit workflow:** This project follows GitHub Spec Kit's constitution → specification → plan → tasks pattern. These are manually authored; Spec Kit CLI is not installed yet (T002).
 
-**Prototype limitations:** In-memory data, resets on refresh, no backend, fixed admin identity, sample due-date strings rather than a running clock, no permission enforcement. UI controls demonstrate layout and flow, never authorization or backend correctness.
+**Prototype limitations:** In-memory data, resets on refresh, no backend, fixed admin identity, sample due-date strings rather than a running clock, no permission enforcement. It sends no mail, so its status changes apply immediately and model none of the R28 delivery gating. UI controls demonstrate layout and flow, never authorization or backend correctness.
 
 **Constitution principles (excerpt):**
 - Email is the employee interface; no employee accounts required
@@ -138,4 +142,5 @@ Hooks in `.githooks/` enforce part of this automatically — enable them once pe
 - Mail delivery round trip never performed; only TLS handshakes and a user-reported local auth check
 - Backup storage provider and restore procedures not finalized
 - Production hosting choice pending feasibility tests
+- What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity detection (open point 4)
 - ESLint pinned at 9 (jsx-a11y peer ceiling) though npm marks 9 out of support; TypeScript pinned to 6.0.2 for typed-ESLint compatibility

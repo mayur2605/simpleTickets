@@ -29,7 +29,20 @@ interface Env {
 }
 
 const MAIL_HOST = "mail.allcheckservices.com";
+/**
+ * Fixed host allowlist, so this is never an open proxy. The two Gmail entries
+ * are diagnostic controls: if the Zimbra host fails but a control succeeds,
+ * the probe works and the failure is specific to that host. If both fail, the
+ * runtime cannot make this kind of outbound connection at all.
+ */
+const ALLOWED_HOSTS = new Set([
+  MAIL_HOST,
+  "49.50.108.191", // the A record for MAIL_HOST, to rule out name resolution
+  "imap.gmail.com",
+  "smtp.gmail.com",
+]);
 const ALLOWED_PORTS = new Set([993, 465, 587]);
+const CONNECT_TIMEOUT_MS = 8_000;
 const GREETING_LIMIT = 200;
 const SOCKET_TIMEOUT_MS = 10_000;
 const MAX_ITERATIONS = 1_000_000;
@@ -62,6 +75,18 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+function withTimeout<T>(task: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(label));
+    }, ms);
+  });
+  return Promise.race([task, expiry]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 async function readGreeting(
   stream: ReadableStream<Uint8Array>,
   timeoutMs: number,
@@ -87,20 +112,26 @@ async function readGreeting(
  * Open a verified TLS connection, read the public banner, close. Proves the
  * runtime can reach the endpoint; proves nothing about authentication.
  */
-async function probeTls(port: number): Promise<Response> {
+async function probeTls(host: string, port: number): Promise<Response> {
   const started = Date.now();
+  let stage = "connect";
   let socket;
   try {
     socket = connect(
-      { hostname: MAIL_HOST, port },
+      { hostname: host, port },
       { secureTransport: "on", allowHalfOpen: false },
     );
+    // connect() is lazy in Workers; `opened` is what actually settles when the
+    // TCP and TLS handshake completes, so it separates a connection failure
+    // from a connected-but-silent server.
+    await withTimeout(socket.opened, CONNECT_TIMEOUT_MS, "connect timeout");
+    stage = "greeting";
     const greeting = await readGreeting(socket.readable, SOCKET_TIMEOUT_MS);
     return json({
       probe: "tls",
-      host: MAIL_HOST,
+      host,
       port,
-      reachable: true,
+      connected: true,
       greetingPrefix: greeting.slice(0, 80),
       wallMs: Date.now() - started,
       note: "TLS reachability only. No authentication, no mailbox access, nothing sent.",
@@ -108,10 +139,15 @@ async function probeTls(port: number): Promise<Response> {
   } catch (error) {
     return json({
       probe: "tls",
-      host: MAIL_HOST,
+      host,
       port,
-      reachable: false,
+      connected: false,
+      failedAt: stage,
       category: errorCategory(error),
+      // Safe to include: nothing was sent, so this is a connection-level
+      // message with no protocol or credential content.
+      detail:
+        error instanceof Error ? error.message.slice(0, 160) : "unknown error",
       wallMs: Date.now() - started,
     });
   } finally {
@@ -175,11 +211,15 @@ export default {
 
     const url = new URL(request.url);
     if (url.pathname === "/tls") {
+      const host = url.searchParams.get("host") ?? MAIL_HOST;
       const port = Number(url.searchParams.get("port") ?? "993");
+      if (!ALLOWED_HOSTS.has(host)) {
+        return json({ error: "host not in allowlist", allowed: [...ALLOWED_HOSTS] }, 400);
+      }
       if (!ALLOWED_PORTS.has(port)) {
         return json({ error: "port not in allowlist", allowed: [...ALLOWED_PORTS] }, 400);
       }
-      return probeTls(port);
+      return probeTls(host, port);
     }
     if (url.pathname === "/hash") {
       const raw = Number(url.searchParams.get("iterations") ?? String(DEFAULT_ITERATIONS));
