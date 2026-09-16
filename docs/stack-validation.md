@@ -633,6 +633,46 @@ What this does **not** yet prove, and must not be claimed:
   100-person organisation's IT traffic, but it is a ceiling, and hitting it would silently
   break replies. Worth measuring before launch.
 
+## Mail routing proved: the published address reaches the mailbox, 17 September 2026
+
+`support@allcheckservices.com` now forwards to `simpleticketssupport@gmail.com`,
+configured as a user-level forward inside Zimbra webmail (Preferences > Mail > Receiving
+Messages > "Forward a copy to"). No DNS change, no mail administrator, and the apex MX
+still points at `gw.allcheckservices.com`, so no other employee's mail was touched.
+
+Measured end to end:
+
+| Step | Evidence |
+| --- | --- |
+| Mail accepted at the published address | Sent to `support@allcheckservices.com` |
+| Forward delivered | INBOX 8 -> 9 messages, `uidNext` 9 -> 10 |
+| **Not** filed as spam | `[Gmail]/Spam` still 0 |
+| Original sender preserved | uid 9 From = `mayur.kulkarni@allcheckservices.com` |
+| Would open a ticket | `approvedSender: true` |
+
+**Why it did not go to spam, which was the real risk.** Forwarding normally breaks SPF:
+the forwarding server relays mail still claiming to be from the original domain, and the
+receiver sees an unauthorised sender. Here the forwarder is `gw.allcheckservices.com`,
+which is the domain's MX, and the SPF record contains `+mx` - so that host is already
+authorised and the check passes. Had this been routed through a subdomain or any
+third-party forwarder, SPF would have failed and every ticket email would have been
+filed as spam. This works because of a property of the existing record, not because
+forwarding is generally safe.
+
+**Why the preserved From header matters.** `extractAddress()` reads that header to decide
+whose ticket it is. Had Zimbra rewritten the sender to the forwarding mailbox, every
+ticket would have been filed against `support@allcheckservices.com` and every reply sent
+to the support box rather than the employee. Zimbra's redirect-style forward keeps it;
+verified rather than assumed.
+
+Real traffic also validated the sender rule better than any fixture: this mailbox
+receives Google security alerts and GitHub notifications, and all of them are correctly
+rejected while the three company-domain messages are accepted.
+
+Still open: **outbound identity.** A reply leaves as `simpleticketssupport@gmail.com`, so
+an employee writes to the company address and is answered by a Gmail one. Fixing that
+needs Gmail "send as" with the mail administrator, or Google Workspace on the domain.
+
 ## Primary sources
 
 - [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)

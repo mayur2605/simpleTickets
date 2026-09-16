@@ -69,12 +69,15 @@ The user approved these eight decisions. They are recorded in the requirements a
 
 4. Handle SMTP acceptance ambiguity: a disconnect after the server accepted a message must not be recorded as a failure, nor an unacknowledged send as an acceptance. R28 settles what a transition waits for; the detection mechanism is still an implementation question.
 
-5. **Decide how mail reaches the support mailbox.** The published address is
-   `support@allcheckservices.com`; the mailbox that is actually polled is
-   `simpleticketssupport@gmail.com`. Either employees are told the new address, or the
-   Zimbra administrator forwards the published one to it. Forwarding keeps the address
-   employees already know but reintroduces a dependency on the mail administrator.
-   **Nothing is configured yet, so no employee mail reaches the system today.**
+5. ~~**Decide how mail reaches the support mailbox.**~~ **Resolved 17 September 2026:
+   Zimbra forwards it.** `support@allcheckservices.com` forwards to
+   `simpleticketssupport@gmail.com`, set as a user-level forward in Zimbra webmail - no
+   DNS change, no mail administrator, apex MX untouched. Proved end to end: the message
+   arrived in INBOX rather than spam (SPF passes because the forwarder is the domain's own
+   MX, which the record authorises via `+mx`), and the original sender was preserved, so
+   tickets are filed against the employee and not the support mailbox. Employees keep the
+   address they already know. **Outbound identity is still open:** replies leave as the
+   Gmail address, which needs Gmail "send as" or Workspace on the domain.
 
 6. ~~**Choose a sending transport.**~~ **Resolved 17 September 2026: Gmail SMTP.** A
    Worker authenticated to `smtp.gmail.com:465` with the App Password already used for

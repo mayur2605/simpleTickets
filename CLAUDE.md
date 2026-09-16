@@ -254,7 +254,7 @@ Hooks in `.githooks/` enforce part of this automatically — enable them once pe
 
 - **Sending mail has no transport.** Zimbra SMTP is unreachable from Workers; Resend's outbound bounced on a HostKarma blacklisting outside our control. R02's acknowledgement, R13's replies and R15's failure visibility are all blocked on this. PRD open point 6.
 - **The two-minute cron has never been observed firing.** Every ticket so far came from a manual `POST /poll`. Schedule, handlers and deployment all verify correct against the Cloudflare API. Under measurement — see "Cron trigger" in `docs/stack-validation.md`.
-- **No mail reaches the system from the published address.** Employees write to `support@allcheckservices.com`; the poller reads `simpleticketssupport@gmail.com`. Nothing forwards between them yet. PRD open point 5.
+- **Replies go out from the Gmail address.** Inbound is solved — `support@allcheckservices.com` forwards to `simpleticketssupport@gmail.com` and the original sender survives the hop — but an employee who writes to the company address is answered by a `gmail.com` one. Needs Gmail "send as" or Workspace on the domain. PRD open point 5.
 - **The dashboard reads none of this.** Connecting the prototype to D1 is not started.
 - R06 staff password hashing: Workers WebCrypto caps PBKDF2 at 100,000 iterations against current guidance of 600,000. Needs WebAssembly Argon2id/bcrypt or an explicit recorded acceptance.
 - **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.

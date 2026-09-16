@@ -343,6 +343,12 @@ export interface PeekedMessage {
   date: string | null;
   /** True when this message would be accepted as an employee request. */
   approvedSender: boolean;
+  /**
+   * Envelope recipients. Shown because the sender alone cannot distinguish mail
+   * forwarded from the published address from mail sent straight to this
+   * mailbox, and that difference is what proves the forward works.
+   */
+  to: string[];
 }
 
 /**
@@ -376,6 +382,9 @@ export async function peekRecent(
       return {
         uid: message.uid,
         from: display,
+        to: (message.envelope?.to ?? [])
+          .map((recipient) => recipient.address ?? "")
+          .filter((address) => address.length > 0),
         subject: message.envelope?.subject ?? "(no subject)",
         // imapflow types this as string | Date depending on the server's reply.
         date:
