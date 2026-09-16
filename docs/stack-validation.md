@@ -548,6 +548,45 @@ granularity and routinely delayed, which breaks R02's two minutes); or escalatin
 Cloudflare. **Do not add a fallback before re-measuring** — it would be permanent
 complexity bought against a possibly transient platform fault.
 
+## Sending has a transport: Gmail SMTP, 17 September 2026
+
+A Cloudflare Worker **authenticated to `smtp.gmail.com:465`** with the same Google App
+Password already used for IMAP ingestion. Measured from a deployed throwaway worker
+(`smtp-probe`), which stopped after AUTH and sent QUIT — no `MAIL FROM`, no `RCPT TO`,
+no `DATA`, nothing delivered.
+
+```
+220  greeting            281 ms
+250  EHLO                advertises AUTH LOGIN
+334  AUTH LOGIN
+334  username accepted
+235  password accepted   <- authenticated
+QUIT                     closed without sending anything
+```
+
+Total 1416 ms. Port 465 is implicit TLS, so the session is encrypted from the first byte
+and there is no STARTTLS window.
+
+This resolves the longest-standing blocker. Sending previously had **no** candidate:
+Zimbra SMTP is unreachable from Workers, and Resend's outbound bounced on a HostKarma
+blacklisting outside our control. The answer was the credential already in hand — one
+mailbox, one secret, no third-party sending reputation to depend on.
+
+What this does **not** yet prove, and must not be claimed:
+
+- **No mail has been sent.** Authentication is not delivery. A real send needs explicit
+  authorization naming sender and recipients, per the constitution.
+- **Nothing is implemented.** No outbound module exists in `worker/`; R13's replies,
+  R02's acknowledgement and R28's delivery gating are all still unbuilt.
+- **The From address is undecided.** Mail would leave as
+  `simpleticketssupport@gmail.com`, not `support@allcheckservices.com`. Employees would
+  see a Gmail address unless Gmail is configured to "send as" the company address, which
+  needs the mail administrator and DKIM/SPF alignment for that domain. This is the same
+  decision as PRD open point 5 and should be settled before any outbound work ships.
+- **Gmail imposes sending limits** (free accounts are limited per day). Adequate for a
+  100-person organisation's IT traffic, but it is a ceiling, and hitting it would silently
+  break replies. Worth measuring before launch.
+
 ## Primary sources
 
 - [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)

@@ -76,9 +76,13 @@ The user approved these eight decisions. They are recorded in the requirements a
    employees already know but reintroduces a dependency on the mail administrator.
    **Nothing is configured yet, so no employee mail reaches the system today.**
 
-6. **Choose a sending transport.** Zimbra SMTP is unreachable from Workers and Resend's
-   outbound bounced on a HostKarma blacklisting we do not control. Until this is settled,
-   the system can open tickets but cannot answer them.
+6. ~~**Choose a sending transport.**~~ **Resolved 17 September 2026: Gmail SMTP.** A
+   Worker authenticated to `smtp.gmail.com:465` with the App Password already used for
+   ingestion (`235`, 1416 ms). Zimbra SMTP stays unreachable and Resend stays blacklisted;
+   this needs neither. **Authentication is not delivery** — no mail has been sent and no
+   outbound module exists, so R02's acknowledgement, R13's replies and R28's delivery
+   gating remain unbuilt. The From address is still open point 5: replies would come from
+   the Gmail address unless Gmail is configured to send as the company address.
 
 7. **Decide the DMARC policy.** Open. What the domain publishes today is deliberately not
    recorded here - see the note in `docs/stack-validation.md` for why a public repository
