@@ -18,7 +18,7 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 - `scripts/check-mail-tls.mjs`: unauthenticated Zimbra TLS probe
 - `tools/mail-check/`: interactive IMAP/SMTP authentication check, run by hand, its own package
 - `.github/workflows/prototype-quality.yml`: runs `npm run verify` on push/PR — first remote run green 16 Sep 2026
-- `.github/workflows/deploy-worker.yml`: deploys `worker/` to Cloudflare on push to `main`
+- `.github/workflows/worker-quality.yml`: runs the worker gate on push/PR. Deploys are owned by Cloudflare Workers Builds, not by Actions
 - Still missing: authentication, the dashboard-to-database connection, and any outgoing mail
 
 **Production stack, as actually built:**
@@ -123,22 +123,33 @@ npm run deploy        # wrangler deploy (prefer the CI workflow)
 
 ### Deploying
 
-`.github/workflows/deploy-worker.yml` deploys on push to `main`, but **only when
-`worker/**` changes**. That path filter is deliberate: a Cloudflare schedule change takes
-up to 15 minutes to propagate globally and every deploy restarts that clock, so
-redeploying on documentation commits would keep the ingestion cron permanently inside a
-propagation window. Do not widen the filter.
+Deploys are owned by **Cloudflare Workers Builds**, which pulls this repository directly.
+Nothing deploys from GitHub Actions, and **no Cloudflare credential is stored in GitHub** —
+that is the reason for this choice over a token-based Actions deploy.
 
-It requires two GitHub repository secrets, neither of which is in the repo:
+Build configuration, set in the Cloudflare dashboard on `simpletickets-api`:
 
-| Secret | Value |
+| Setting | Value |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | An API token with the *Edit Cloudflare Workers* template, scoped to this account |
-| `CLOUDFLARE_ACCOUNT_ID` | The account ID for `simpleticketssupport@gmail.com` |
+| Root directory | `worker` |
+| Build command | `npm run verify` |
+| Deploy command | `npx wrangler deploy` |
+| Build watch paths | `worker/*` |
 
-The gate (`npm run verify`) runs before the deploy step, so a red gate never reaches
-production. Note the gap: the workflow runs on push to `main` only, so a pull request
-touching `worker/` is not checked by CI.
+**The watch path is load-bearing, not tidiness.** A Cloudflare schedule change takes up to
+15 minutes to propagate globally and every deploy restarts that clock, so building on
+documentation commits would keep the ingestion cron permanently inside a propagation
+window. Do not widen it. This is not hypothetical: it invalidated a night of cron
+measurements.
+
+The build command is the gate, so a red gate fails the build and never deploys. Secrets
+already set with `wrangler secret put` are preserved across deploys and are not managed by
+the build — never put them in `wrangler.toml` or any workflow file.
+
+`.github/workflows/worker-quality.yml` runs the same gate on push **and pull requests**,
+which the deploy path does not cover. It never deploys.
+
+Local deploys still work: `npm run deploy` in `worker/`, with wrangler's own OAuth login.
 
 ## The smoke test
 
