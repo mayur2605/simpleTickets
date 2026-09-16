@@ -89,9 +89,15 @@ This project has been worked by more than one coding agent at the same time. Tha
 
 **`pre-commit`** blocks a commit when staged changes contain:
 - a `.env` file, or anything under `node_modules/` or `dist/`
+- a file **named** like a secret — `.probe-token`, `id_rsa`, `*.pem`, `credentials.json`
+- a file whose whole content is one long high-entropy string, whatever it is named
 - a private key block, AWS access key, GitHub token or Slack token
 - a hardcoded credential assignment such as `password = "..."` with a non-trivial literal
 - a file inside `prototype/` that Prettier would reformat
+
+The first two rules exist because a 64-character hex probe token was committed on
+17 September 2026. It lived in its own file and contained no `password =` shape, so the
+content patterns did not match it. Secrets are not always assignments.
 
 **`commit-msg`** blocks a commit message containing AI attribution — a `Co-Authored-By:` line naming a model or assistant, a "Generated with" line, or a robot emoji.
 

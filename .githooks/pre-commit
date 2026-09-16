@@ -21,7 +21,25 @@ if printf '%s\n' "$files" | grep -qE '(^|/)(node_modules|dist)/'; then
   fail "dependency or build output is staged. Check .gitignore."
 fi
 
-# 2. Credentials in the staged changes (added lines only).
+# 2. Files whose NAME says they hold a secret. Added after a 64-char hex probe
+#    token was committed: it sat in its own file and matched none of the
+#    content patterns below, which only look for assignments like password=.
+if printf '%s\n' "$files" | grep -qiE '(^|/)(\.probe-token|.*\.probe-token|id_rsa|id_ed25519|.*\.pem|.*\.p12|.*\.pfx|credentials\.json|service-account.*\.json)$'; then
+  fail "a file that looks like it holds a secret is staged. Unstage it and add it to .gitignore."
+fi
+
+# 3. A staged file that is one long high-entropy string is almost certainly a
+#    key or token, whatever it is called.
+for f in $(printf '%s\n' "$files"); do
+  [ -f "$f" ] || continue
+  bytes=$(wc -c < "$f" | tr -d ' ')
+  [ "$bytes" -ge 24 ] && [ "$bytes" -le 200 ] || continue
+  if [ "$(wc -l < "$f" | tr -d ' ')" -le 1 ] && grep -qE '^[A-Za-z0-9+/=_-]{24,}$' "$f"; then
+    fail "$f is a single long random-looking string, which is what a leaked key looks like. Unstage it."
+  fi
+done
+
+# 4. Credentials in the staged changes (added lines only).
 added=$(git diff --cached --diff-filter=ACM -U0 | grep '^+' | grep -v '^+++')
 if printf '%s\n' "$added" | grep -qE 'BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}'; then
   fail "a credential appears in the staged changes. If it is real, rotate it first, then unstage."
