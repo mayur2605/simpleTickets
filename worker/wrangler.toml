@@ -3,9 +3,13 @@ main = "src/index.ts"
 compatibility_date = "2026-09-16"
 compatibility_flags = ["nodejs_compat"]
 
-# No public URL: this worker is driven by cron, not by HTTP. The admin routes
-# in src/index.ts are reachable through `wrangler dev --remote` when needed.
-# Set true once a workers.dev subdomain is registered for the account.
+# This publishes a public *.workers.dev URL. The worker is reachable from the
+# internet, and the only thing in front of it is the ADMIN_TOKEN check in
+# src/index.ts, which returns 404 (not 401) so the routes do not announce
+# themselves. Ingestion itself is driven by cron, not by HTTP; the routes exist
+# for operating and debugging. Setting this to false removes the public URL and
+# with it the manual /poll escape hatch, which is currently the only thing that
+# has ever successfully triggered ingestion.
 workers_dev = true
 
 [[d1_databases]]
