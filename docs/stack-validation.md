@@ -547,8 +547,11 @@ and independently with a second, purpose-built worker.
 
 | Worker | Cron | Propagation complete | Slots missed after |
 | --- | --- | --- | --- |
-| `cron-probe` | `* * * * *` | 21:10Z | 21:10, 21:11, 21:12 - three consecutive |
-| `simpletickets-api` | `*/2 * * * *` | 21:08:19Z | 21:10, 21:12 - two consecutive |
+| `cron-probe` | `* * * * *` | 21:10Z | 21:10, 21:11, 21:12, 21:13 - four consecutive |
+| `simpletickets-api` | `*/2 * * * *` | 21:08:19Z | 21:10, 21:12, 21:14 - three consecutive |
+
+Final readings, taken up to 21:14:07Z: the probe's KV namespace was still `[]` after 17
+checks, and the ticket database was untouched after 6.
 
 `cron-probe` is the decisive measurement. It was deployed with **no `fetch` handler and
 `workers_dev = false`**, so nothing on the internet can invoke it: any tick recorded in its
@@ -576,6 +579,12 @@ shape - something that was not evidence being read as evidence:
 The lesson worth keeping: every one of these produced a *confident* wrong answer, and each
 was caught only by re-deriving the result a different way. A single green signal from a
 tool that can fail silently is not a measurement.
+
+Both probe workers and the probe KV namespace were deleted after the measurement
+(`smtp-probe` held a copy of the Gmail App Password and should not have outlived the
+question it answered). The account holds one worker, `simpletickets-api`, and no KV
+namespaces. Recreating the cron probe is ~15 lines and is worth doing again rather than
+leaving a credential-bearing worker deployed.
 
 If the trigger stays dead, the fallbacks in order of preference are: a Durable Object
 alarm that reschedules itself (stays inside Cloudflare, no external secret, no dependency
