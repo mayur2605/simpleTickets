@@ -10,6 +10,7 @@
  */
 import { ingest, flushOutbox, type Env } from "./pipeline";
 import { runTick, TICK_INTERVAL_MS } from "./tick";
+import { tickHealth } from "./health";
 
 interface TickRecord {
   at: string;
@@ -28,15 +29,32 @@ export class Ticker implements DurableObject {
   }
 
   /**
-   * Control surface, reached only through the worker's own token-gated routes.
+   * Re-arm the chain if it should be running and is not.
    *
-   * `start` is idempotent: setting an alarm that is already set simply moves
-   * it, so calling it twice cannot produce two chains.
+   * The `wanted` flag is what separates "the chain died" from "someone stopped
+   * it on purpose". Without it, healing would fight every deliberate stop and
+   * there would be no way to turn the system off.
+   *
+   * Idempotent: an alarm that is already set is left alone, so healing can be
+   * called as often as anything likes without ever producing a second chain.
+   */
+  async #heal(): Promise<boolean> {
+    const wanted = (await this.#ctx.storage.get<boolean>("wanted")) ?? false;
+    if (!wanted) return false;
+    if ((await this.#ctx.storage.getAlarm()) !== null) return false;
+    await this.#ctx.storage.setAlarm(Date.now() + 1000);
+    console.log(JSON.stringify({ source: "ticker", healed: true, at: new Date().toISOString() }));
+    return true;
+  }
+
+  /**
+   * Control surface, reached only through the worker's own token-gated routes.
    */
   async fetch(request: Request): Promise<Response> {
     const action = new URL(request.url).pathname;
 
     if (action === "/start") {
+      await this.#ctx.storage.put("wanted", true);
       const existing = await this.#ctx.storage.getAlarm();
       if (existing === null) {
         await this.#ctx.storage.setAlarm(Date.now() + 1000);
@@ -49,14 +67,30 @@ export class Ticker implements DurableObject {
     }
 
     if (action === "/stop") {
+      // Recorded before the alarm is removed, so a tick landing in between
+      // cannot reschedule a chain that has just been told to stop.
+      await this.#ctx.storage.put("wanted", false);
       await this.#ctx.storage.deleteAlarm();
       return Response.json({ stopped: true });
     }
 
+    // Any read of the status also heals, so every glance at the system is a
+    // chance to notice it has stopped and restart it.
+    const healed = await this.#heal();
+
+    const wanted = (await this.#ctx.storage.get<boolean>("wanted")) ?? false;
     const alarm = await this.#ctx.storage.getAlarm();
     const last = await this.#ctx.storage.get<TickRecord>("last");
+    const health = tickHealth(last?.at ?? null, Date.now(), TICK_INTERVAL_MS);
+
     return Response.json({
+      wanted,
       running: alarm !== null,
+      // Stalled only counts when the chain is supposed to be running; a
+      // deliberately stopped ticker is quiet, not broken.
+      stalled: wanted && health.stalled,
+      healed,
+      silentMinutes: health.silentMinutes,
       nextAlarm: alarm === null ? null : new Date(alarm).toISOString(),
       intervalMs: TICK_INTERVAL_MS,
       last: last ?? null,
@@ -64,6 +98,11 @@ export class Ticker implements DurableObject {
   }
 
   async alarm(): Promise<void> {
+    // A tick that runs after a stop was requested must not reschedule itself.
+    if (!((await this.#ctx.storage.get<boolean>("wanted")) ?? false)) {
+      return;
+    }
+
     let ingested = 0;
     let sent = 0;
 
