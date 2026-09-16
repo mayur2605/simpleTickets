@@ -35,7 +35,14 @@ import "@fontsource/geist/500.css";
 import "@fontsource/geist/600.css";
 import "./style.css";
 import "./brand.css";
-import { apiConfigured, fetchTickets, type ApiTicket } from "./api";
+import {
+  apiConfigured,
+  fetchTickets,
+  fetchTicket,
+  sendReply,
+  addNote as postNote,
+  type ApiTicket,
+} from "./api";
 type Ticket = {
   id: number;
   title: string;
@@ -244,6 +251,36 @@ function App() {
       cancelled = true;
     };
   }, []);
+  // A live ticket's history comes from the server. Without this the detail
+  // view would show the in-memory sample conversation beside a real ticket,
+  // which is the worst of both: it looks like data and is not.
+  useEffect(() => {
+    if (!live || selected === null) return;
+    let cancelled = false;
+    void fetchTicket(selected)
+      .then((result) => {
+        if (cancelled) return;
+        setMessages((previous) => ({
+          ...previous,
+          [selected]: result.messages.map((m) => ({
+            text: m.body,
+            note: m.direction === "note",
+          })),
+        }));
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setNotice(
+          `Could not load this conversation: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [live, selected]);
+
   const draft = note ? noteDraft : replyDraft;
   const setDraft = note ? setNoteDraft : setReplyDraft;
   const current = tickets.find((t) => t.id === selected);
@@ -268,6 +305,47 @@ function App() {
   }
   function send() {
     if (!current || !draft.trim() || draft.includes("[Add steps")) return;
+
+    if (live) {
+      const ticketId = current.id;
+      const text = draft;
+      const isNote = note;
+      setDraft("");
+      setNotice(isNote ? "Adding note..." : "Queueing reply...");
+      void (
+        isNote
+          ? postNote(ticketId, text, "staff1")
+          : sendReply(ticketId, text, "staff1")
+      )
+        .then(async () => {
+          // Re-read rather than patching local state: the server decides what
+          // actually happened, including whether a status moved at all.
+          const [detail, list] = await Promise.all([
+            fetchTicket(ticketId),
+            fetchTickets(),
+          ]);
+          setMessages((previous) => ({
+            ...previous,
+            [ticketId]: detail.messages.map((m) => ({
+              text: m.body,
+              note: m.direction === "note",
+            })),
+          }));
+          setTickets(list.tickets.map(fromApi));
+          setNotice(
+            isNote
+              ? "Internal note added. It is never emailed to the employee."
+              : "Reply queued. It is sent on the next poll, within two minutes.",
+          );
+        })
+        .catch((error: unknown) => {
+          setNotice(
+            `Not saved: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      return;
+    }
+
     setMessages({
       ...messages,
       [current.id]: [...(messages[current.id] || []), { text: draft, note }],
