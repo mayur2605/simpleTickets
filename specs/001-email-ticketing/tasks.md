@@ -11,6 +11,7 @@ Status: production implementation tasks remain open. A local prototype privacy r
 - [ ] T005 Confirm hosting, storage, backup/restore design and cost assumptions; finalize plan.
 
 - [ ] T028 Extend strict type/lint/format/CI gates to the production backend, add test-first domain and integration suites, and migrate prototype CSS to mobile-first with accessibility and cross-browser validation. See docs/engineering-standards.md.
+  Progress: domain unit suite added to the gate (T009). Name/role/value fixed for the sidebar nav, queue filter tabs and the ticket table's scroll region, asserted in the browser smoke test. Still open: desktop-first CSS migration, full keyboard journeys, 200% zoom, screen-reader passes, forced colours, touch targets, and Firefox/WebKit.
 
 ## Phase 1 — Shared foundation
 

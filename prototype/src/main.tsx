@@ -277,6 +277,7 @@ function App() {
                 <button
                   key={p}
                   className={page === p ? "nav active" : "nav"}
+                  aria-current={page === p ? "page" : undefined}
                   onClick={() => {
                     navigate(p);
                   }}
@@ -742,6 +743,7 @@ function App() {
                     <div className="queue-tabs">
                       <button
                         className={!overdueOnly ? "selected" : ""}
+                        aria-pressed={!overdueOnly}
                         onClick={() => {
                           setOverdueOnly(false);
                         }}
@@ -758,6 +760,7 @@ function App() {
                       </button>
                       <button
                         className={overdueOnly ? "selected" : ""}
+                        aria-pressed={overdueOnly}
                         onClick={() => {
                           setOverdueOnly(true);
                         }}
@@ -797,7 +800,12 @@ function App() {
                         ))}
                       </Select>
                     </div>
-                    <div className="table-scroll">
+                    <div
+                      className="table-scroll"
+                      role="region"
+                      aria-label="Ticket queue"
+                      tabIndex={0}
+                    >
                       <Table aria-label="IT tickets">
                         <TableHeader>
                           <TableRow>

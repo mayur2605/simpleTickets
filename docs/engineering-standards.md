@@ -16,6 +16,8 @@ Critical scenarios: sender/participant authorization, duplicate ingestion, outbo
 
 TypeScript strict, noUncheckedIndexedAccess, exactOptionalPropertyTypes, noImplicitReturns, noFallthroughCasesInSwitch, noUnusedLocals, noUnusedParameters and consistent filename casing are enabled for the prototype. ESLint uses strict type-aware rules, React Hooks and JSX accessibility rules with zero warnings. Ban explicit any and non-null assertions. Prefer unknown plus validation over casts. Document genuinely necessary exceptions narrowly rather than weakening the global rules.
 
+Documented exception: `jsx-a11y/no-noninteractive-tabindex` allows a tab stop on `role="region"` in addition to its default `tabpanel`. A horizontally scrolling container must be focusable or keyboard-only users cannot scroll it (WCAG 2.1.1); the rule stays an error everywhere else and no disable comment is used.
+
 Third-party declaration checking currently uses skipLibCheck for dependency compatibility; application code is still strictly checked. New external boundaries (API input, environment, database projections, parsed mail) require runtime schemas. Select the validation library when the backend is selected.
 
 ## 4. Architecture and data

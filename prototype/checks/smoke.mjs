@@ -16,10 +16,24 @@ await expect(
   page.getByRole("heading", { name: "SimpleTickets" }),
 ).toBeVisible();
 await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(7);
-await page
+// Accessibility: state shown with colour must also be exposed to assistive
+// technology, and the wide table's scroll container must be reachable by
+// keyboard and carry a name.
+await expect(
+  page.locator("nav").getByRole("button", { name: /All Tickets/ }),
+).toHaveAttribute("aria-current", "page");
+await expect(
+  page.locator("nav").getByRole("button", { name: "Team", exact: true }),
+).not.toHaveAttribute("aria-current", "page");
+const scroller = page.getByRole("region", { name: "Ticket queue" });
+await expect(scroller).toBeVisible();
+await expect(scroller).toHaveAttribute("tabindex", "0");
+const attentionTab = page
   .locator(".queue-tabs")
-  .getByRole("button", { name: /Needs attention/ })
-  .click();
+  .getByRole("button", { name: /Needs attention/ });
+await expect(attentionTab).toHaveAttribute("aria-pressed", "false");
+await attentionTab.click();
+await expect(attentionTab).toHaveAttribute("aria-pressed", "true");
 await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1);
 await page
   .locator(".queue-tabs")

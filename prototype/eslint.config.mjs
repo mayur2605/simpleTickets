@@ -22,6 +22,17 @@ export default tseslint.config(
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-non-null-assertion": "error",
       "@typescript-eslint/consistent-type-imports": "error",
+      // A horizontally scrollable container must be focusable, or keyboard-only
+      // users cannot scroll it (WCAG 2.1.1 Keyboard). Allow a tab stop on
+      // role="region" only; every other non-interactive element stays banned.
+      "jsx-a11y/no-noninteractive-tabindex": [
+        "error",
+        {
+          tags: [],
+          roles: ["tabpanel", "region"],
+          allowExpressionValues: true,
+        },
+      ],
     },
   },
   {
