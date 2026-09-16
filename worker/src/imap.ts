@@ -3,6 +3,8 @@
  * mail provider can change without touching either.
  */
 import { ImapFlow } from "imapflow";
+import type { MessageStructureObject } from "imapflow";
+import { htmlToText } from "./domain";
 
 export interface FetchedMessage {
   uid: number;
@@ -18,7 +20,8 @@ export interface MailboxRead {
   messages: FetchedMessage[];
 }
 
-// Message bodies are not yet ingested: see the note in the fetch below.
+/** Bound a single message before it reaches the database. R12 governs attachments. */
+const MAX_BODY_CHARS = 100_000;
 /** Bound one run, so a backlog cannot make a cron invocation run away. */
 const MAX_PER_RUN = 25;
 
@@ -65,6 +68,81 @@ export async function readMailboxMarkers(
   }
 }
 
+
+/**
+ * Find the part worth showing on a ticket.
+ *
+ * Prefers text/plain. Falls back to text/html, because plenty of mail clients
+ * send HTML only — this test message did. Returns null for a message with no
+ * structure to walk, where the whole body is the text.
+ */
+function findBodyPart(
+  node: MessageStructureObject | undefined,
+): { part: string; type: string } | null {
+  if (node === undefined) return null;
+  const plain = searchByType(node, "text/plain");
+  if (plain !== null) return plain;
+  return searchByType(node, "text/html");
+}
+
+function searchByType(
+  node: MessageStructureObject,
+  wanted: string,
+): { part: string; type: string } | null {
+  if (node.type === wanted) {
+    // A single-part message has no part identifier. "TEXT" addresses its body,
+    // which is what we want; without this the download returns the entire raw
+    // message, headers and all.
+    return {
+      part: typeof node.part === "string" ? node.part : "TEXT",
+      type: node.type,
+    };
+  }
+  for (const child of node.childNodes ?? []) {
+    const found = searchByType(child, wanted);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/**
+ * Fetch one message's body, decoded.
+ *
+ * Two deliberate choices. One UID at a time, because fetching bodies across a
+ * UID range stalls the socket under nodejs_compat while the identical
+ * single-UID request succeeds. And download() rather than bodyParts, because
+ * download decodes the transfer encoding — bodyParts hands back raw base64.
+ */
+async function readBody(
+  client: ImapFlow,
+  uid: number,
+  structure: MessageStructureObject | undefined,
+): Promise<string> {
+  const chosen = findBodyPart(structure);
+  const { content } = await client.download(
+    String(uid),
+    chosen === null ? "TEXT" : chosen.part,
+    { uid: true },
+  );
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of content) {
+    const bytes = chunk as Uint8Array;
+    chunks.push(bytes);
+    total += bytes.length;
+    if (total > MAX_BODY_CHARS * 4) break;
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const text = new TextDecoder().decode(joined);
+  const isHtml = chosen?.type === "text/html" || /^\s*<(!doctype|html)/i.test(text);
+  return (isHtml ? htmlToText(text) : text).slice(0, MAX_BODY_CHARS).trim();
+}
+
 export async function readNewMail(
   user: string,
   appPassword: string,
@@ -98,7 +176,7 @@ export async function readNewMail(
     // the streaming read does not.
     const fetched = await client.fetchAll(
       { uid: `${String(sinceUid + 1)}:*` },
-      { uid: true, envelope: true },
+      { uid: true, envelope: true, bodyStructure: true },
       { uid: true },
     );
 
@@ -115,9 +193,7 @@ export async function readNewMail(
             ? `${sender.name} <${sender.address ?? ""}>`
             : (sender.address ?? "");
 
-      // Body deliberately not fetched here: reading IMAP literals stalls under
-      // nodejs_compat. Envelope data comes from the server already parsed.
-      const body = "";
+      const body = await readBody(client, message.uid, message.bodyStructure);
 
       messages.push({
         uid: message.uid,

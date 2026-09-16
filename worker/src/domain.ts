@@ -42,3 +42,33 @@ export function isApprovedSender(header: string): boolean {
   if (address === null) return false;
   return address.slice(address.lastIndexOf("@") + 1) === APPROVED_DOMAIN;
 }
+
+/**
+ * Strip tags so an HTML-only message is readable as ticket text.
+ *
+ * Deliberately crude: scripts and styles removed, block tags become newlines,
+ * the handful of entities that actually appear in mail decoded. It is not a
+ * sanitiser and its output is never rendered as HTML — the dashboard will show
+ * it as text. Storing the original HTML as well is a later decision.
+ */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    // A paragraph is a visual break, so it earns a blank line. Divs and rows
+    // are often nested three deep in mail HTML and would otherwise produce a
+    // wall of blank lines, so they get a single newline.
+    .replace(/<\/(p|h[1-6])>/gi, "\n\n")
+    .replace(/<\/(div|tr|li)>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+

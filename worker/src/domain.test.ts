@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { extractAddress, isApprovedSender, APPROVED_DOMAIN } from "./domain";
+import {
+  extractAddress,
+  isApprovedSender,
+  htmlToText,
+  APPROVED_DOMAIN,
+} from "./domain";
 
 describe("extractAddress", () => {
   it("takes the address out of a display-name header", () => {
@@ -59,5 +64,37 @@ describe("isApprovedSender — R01, exact domain only", () => {
   it("accepts a full header, not just a bare address", () => {
     expect(isApprovedSender('"Rao, Ananya" <ananya@allcheckservices.com>')).toBe(true);
     expect(isApprovedSender('"allcheckservices.com" <attacker@evil.example>')).toBe(false);
+  });
+});
+
+describe("htmlToText — HTML-only mail must be readable on a ticket", () => {
+  it("keeps the text and drops the markup", () => {
+    expect(
+      htmlToText('<html><body><div style="font-size:12pt">VPN is down</div></body></html>'),
+    ).toBe("VPN is down");
+  });
+
+  it("turns block ends and breaks into line breaks", () => {
+    expect(htmlToText("<p>First</p><p>Second</p>")).toBe("First\n\nSecond");
+    expect(htmlToText("One<br>Two")).toBe("One\nTwo");
+  });
+
+  it("removes script and style content entirely", () => {
+    expect(htmlToText("<style>p{color:red}</style><p>Visible</p>")).toBe("Visible");
+    expect(htmlToText("<script>alert(1)</script><p>Visible</p>")).toBe("Visible");
+  });
+
+  it("decodes the entities that actually turn up in mail", () => {
+    expect(htmlToText("<p>Tom &amp; Jerry &lt;tag&gt; &quot;quoted&quot;</p>")).toBe(
+      'Tom & Jerry <tag> "quoted"',
+    );
+  });
+
+  it("collapses the blank-line pileup that nested markup produces", () => {
+    expect(htmlToText("<div>A</div><div></div><div></div><div>B</div>")).toBe("A\n\nB");
+  });
+
+  it("leaves plain text alone", () => {
+    expect(htmlToText("Just plain text")).toBe("Just plain text");
   });
 });

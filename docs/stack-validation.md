@@ -211,18 +211,34 @@ Message-ID stored, the UID recorded in `ingest_log`. Three further polls created
 so idempotency holds. The launch cutoff behaved: five pre-existing messages were never
 imported.
 
-### Two things do not work yet
+### One thing does not work yet
 
-**Message bodies are not ingested.** `bodyParts` stalls the socket under
-`nodejs_compat` — `Socket timeout`, every time, even for one small message. Connect,
-authenticate, `mailboxOpen` and envelope fetch all work; reading IMAP literals does not.
-Tickets therefore carry subject and sender but `body_len` 0, which is not good enough to
-ship. Untried: `client.download()` and `source: true` both use the same literal-reading
-path and will probably fail the same way; a host with real Node would not have the
-problem at all.
+**Message bodies: fixed.** The diagnosis in the first paragraph below was wrong in an
+instructive way, so both are kept.
+
+The stall is not about IMAP literals. Fetching bodies across a UID **range** times out
+under `nodejs_compat`; the identical request for a **single UID** succeeds. Four
+strategies were tried against one known message and all four worked one-at-a-time:
+`fetchOne` with `bodyParts`, `fetchOne` with `source`, and `download` of part `TEXT` or
+`1`. So ingestion now reads envelopes in one ranged call and each body individually.
+
+Three further corrections came out of actually looking at the stored rows rather than
+trusting a byte count:
+
+- `bodyParts` returns content still in its transfer encoding — the first "successful"
+  body was base64. `download()` decodes, so it is used instead.
+- A single-part message has no part identifier, so the structure search returned null and
+  `download` fetched the entire raw message, headers and all. Single-part messages now
+  address their body as `TEXT`.
+- The test message was HTML-only, which is common. Bodies are converted to text, with
+  tags stripped and entities decoded, so a ticket shows the message rather than markup.
+
+A ticket now stores `"TEST MAIL TO CREATE TICKET\n\nGet Outlook for Mac"` — the actual
+content. `htmlToText` lives in `domain.ts` with the other pure rules and has six tests.
 
 The earlier probe proved connect and `mailboxOpen`, and was taken as proving IMAP works.
-It did not prove fetching. Worth remembering when the next component is declared proven.
+It did not prove fetching, and fetching is where it broke. Worth remembering when the
+next component is declared proven.
 
 **Cron does not fire.** The trigger is registered (`*/2 * * * *`, visible in the deploy
 output and the dashboard) but there have been zero scheduled invocations. Every run so
