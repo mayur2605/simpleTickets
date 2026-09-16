@@ -1,0 +1,22 @@
+name = "simpletickets-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-16"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "simpletickets"
+database_id = "3f3e60f6-f181-4e56-a387-89678a34d538"
+
+# R02: check for new mail every two minutes.
+[triggers]
+crons = ["*/2 * * * *"]
+
+[vars]
+GMAIL_USER = "simpleticketssupport@gmail.com"
+
+[observability]
+enabled = true
+
+# Secrets, set with `wrangler secret put`:
+#   GMAIL_APP_PASSWORD, ADMIN_TOKEN
