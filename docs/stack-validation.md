@@ -33,6 +33,45 @@ Keep Workers + D1 + private R2 as the free-first candidate pending a deployed fe
 - Workers outbound TCP port 25 is blocked. The locally reachable 465 endpoint is a candidate for TLS SMTP; deployed connectivity must be proved. Workers also block outbound TCP to Cloudflare IP ranges.
 - R2 free storage is finite; indefinite retention and separate backups need capacity tracking and an overage plan.
 
+## Workers feasibility — measured 16 September 2026
+
+Gate 1 of docs/runtime-feasibility.md is met locally. `tools/runtime-check/` builds a
+Worker bundle (4.78 KiB, 2.01 KiB gzipped) with wrangler 4.132.0 and
+@cloudflare/workers-types 5.20260916.1, under strict TypeScript. Nothing has been
+deployed and no Cloudflare account has been contacted; wrangler telemetry is disabled.
+
+**Password hashing does not fit the Workers Free CPU allowance.** Measured locally with
+Node 24 WebCrypto on the development Mac, PBKDF2-HMAC-SHA256 deriving 256 bits:
+
+| Iterations | Elapsed | Against a 10 ms budget |
+| --- | --- | --- |
+| 10,000 | 1.7 ms | fits, far below current guidance |
+| 50,000 | 6.9 ms | fits, still below current guidance |
+| 100,000 | 12.7 ms | over |
+| 210,000 | 26.5 ms | over |
+| 600,000 | 75.3 ms | over |
+
+This is an indicative lower bound, not the deployed number: it is native Node on Apple
+silicon, and a Workers isolate is generally slower. It is enough to act on. Workers Free
+allows 10 ms CPU per invocation, so meeting current PBKDF2 guidance costs roughly three
+to eight times the whole budget, before request parsing, database work or session
+handling. Reaching 10 ms means dropping to around 50,000 iterations, which
+specs/001-email-ticketing/plan.md forbids: hashing is not weakened to fit a free tier.
+
+Password verification is CPU-heavy by design, so this is not specific to PBKDF2 —
+Argon2 and bcrypt are worse on CPU, and no parameter choice both satisfies current
+guidance and fits 10 ms. Any host with a hard 10 ms CPU cap is therefore incompatible
+with the authentication requirement in R06.
+
+Open options, none chosen and nothing purchased: Workers Paid raises the CPU limit to
+30 s per invocation and resolves this directly; another host may suit better once the
+TLS probe result is known. Present a measured proposal to the user rather than
+weakening R06.
+
+Still unmeasured, and needing a deployed Worker: outbound TLS reachability to 993/465
+from the runtime, actual cpuTime, memory, MIME parsing cost, cron scheduling and D1/R2
+behaviour.
+
 ## Next validation gate
 
 1. Use a temporary Zimbra test mailbox with secure local secret entry; do not paste passwords in conversation or commit them.

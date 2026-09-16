@@ -1,0 +1,10 @@
+name = "simpletickets-runtime-check"
+main = "src/worker.ts"
+compatibility_date = "2026-09-16"
+
+# No routes, no custom domain, no D1/R2 bindings. This Worker exists only to
+# measure whether Cloudflare can meet the requirements in docs/PRD.md, and is
+# deleted once the feasibility gate in docs/runtime-feasibility.md is answered.
+#
+# PROBE_TOKEN is NOT set here. Provide it as a deployment secret:
+#   wrangler secret put PROBE_TOKEN
