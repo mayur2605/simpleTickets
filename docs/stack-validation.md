@@ -185,8 +185,24 @@ which makes it unsuitable as the support mailbox:
 - Personal correspondence would become readable by all five IT staff, which the privacy
   principle in the constitution does not permit.
 
-Create an empty Gmail account for the support mailbox before building the poller. It is
-a credential swap; nothing proved here changes.
+Done: the support mailbox is **simpleticketssupport@gmail.com**, a fresh account. A
+Worker authenticated to it and opened INBOX read-only:
+
+```
+authenticated: true   messages: 3   uidNext: 4   uidValidity: 1
+```
+
+The three messages are Google's welcome mail. `uidValidity: 1` means the mailbox has
+never been recreated.
+
+### R27's launch cutoff becomes one integer
+
+The plan devotes considerable design to UIDVALIDITY reconciliation, a durable launch
+boundary and not importing pre-launch mail, because it assumed an existing mailbox with
+history. Against a fresh mailbox that reduces to: record `uidNext` at activation (4), and
+create tickets only for UIDs at or above it. UIDVALIDITY still has to be stored and
+compared, because Gmail can in principle renumber, but the reconciliation path is no
+longer the delicate part of ingestion.
 
 ## Accepted architecture, 17 September 2026
 

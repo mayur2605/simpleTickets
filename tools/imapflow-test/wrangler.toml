@@ -4,7 +4,7 @@ compatibility_date = "2026-09-16"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-GMAIL_USER = "allcheckservices@gmail.com"
+GMAIL_USER = "simpleticketssupport@gmail.com"
 
 # Secrets, set with `wrangler secret put`:
 #   GMAIL_APP_PASSWORD, PROBE_TOKEN
