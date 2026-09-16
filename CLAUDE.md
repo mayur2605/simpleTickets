@@ -6,7 +6,7 @@ Read `AGENTS.md` and `docs/engineering-standards.md` first — they are the bind
 
 ## Project overview
 
-SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it. Current status: an interactive frontend prototype with an enforced quality gate, plus a **deployed ingestion backend** that turns real emails into real tickets in D1. The two are not connected — the prototype is still in-memory — and the system cannot send any mail at all, so it can open a ticket but not answer one.
+SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it. Current status: an interactive frontend prototype with an enforced quality gate, plus a **deployed, running backend** that ingests real employee email, opens tickets, acknowledges them and threads replies — proved end to end on real mail on 17 September 2026. The two halves are not connected: the prototype is still in-memory and reads none of this. No assignment, no IT replies, no authentication.
 
 ## Architecture
 
@@ -161,10 +161,18 @@ file with it becomes permanently untestable.
 - Bounces are classified **before** auto-replies. A bounce has a null return path, so the
   auto-reply test matches it too, and misfiling one loses a delivery failure R15 needs.
 
-**Known gaps:** nothing has ever been sent; the `outbox` table is not applied to the remote
-D1 (`migrations/001`); bounce *matching* is unreliable because `readBody` extracts the
-human-readable part of a report rather than the quoted original; `store.ts` and `index.ts`
-have no integration tests; the two-minute cron has never been observed firing.
+**Ingestion is driven by the `Ticker` Durable Object, not by cron.** Cloudflare's cron
+triggers do not fire on this account (measured with a probe worker that had no HTTP
+surface at all). The alarm reschedules itself every two minutes and, being
+single-threaded, gives the mutual exclusion cron never did. Control it through the
+token-gated `/ticker`, `/ticker/start` and `/ticker/stop` routes. It reschedules *before*
+doing its work — reverse that and one failed poll ends the chain forever.
+
+**Known gaps:** nothing restarts the ticker chain if it stops (no watchdog); bounce
+*matching* is unreliable because `readBody` extracts the human-readable part of a report
+rather than the quoted original; `store.ts` and `index.ts` have no integration tests; no
+assignment, no dashboard connection, and staff auth is still blocked on the Workers
+PBKDF2 cap.
 
 ### Deploying
 
@@ -252,8 +260,8 @@ Hooks in `.githooks/` enforce part of this automatically — enable them once pe
 
 ## Unresolved items
 
-- **Sending mail has no transport.** Zimbra SMTP is unreachable from Workers; Resend's outbound bounced on a HostKarma blacklisting outside our control. R02's acknowledgement, R13's replies and R15's failure visibility are all blocked on this. PRD open point 6.
-- **The two-minute cron has never been observed firing.** Every ticket so far came from a manual `POST /poll`. Schedule, handlers and deployment all verify correct against the Cloudflare API. Under measurement — see "Cron trigger" in `docs/stack-validation.md`.
+- **Sending works.** Gmail SMTP, using the App Password already used for ingestion. Real acknowledgements have been sent and accepted (`250` with Gmail queue ids). R13's IT replies and R15's failure visibility are still unbuilt, but no longer blocked on transport.
+- **Cloudflare cron triggers do not fire on this account.** Confirmed with a probe worker that had no HTTP surface, so only the scheduler could have run it; it never did. Replaced by the `Ticker` Durable Object alarm, which works. See `docs/stack-validation.md`.
 - **Replies go out from the Gmail address.** Inbound is solved — `support@allcheckservices.com` forwards to `simpleticketssupport@gmail.com` and the original sender survives the hop — but an employee who writes to the company address is answered by a `gmail.com` one. Needs Gmail "send as" or Workspace on the domain. PRD open point 5.
 - **The dashboard reads none of this.** Connecting the prototype to D1 is not started.
 - R06 staff password hashing: Workers WebCrypto caps PBKDF2 at 100,000 iterations against current guidance of 600,000. Needs WebAssembly Argon2id/bcrypt or an explicit recorded acceptance.

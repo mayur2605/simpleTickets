@@ -673,6 +673,62 @@ Still open: **outbound identity.** A reply leaves as `simpleticketssupport@gmail
 an employee writes to the company address and is answered by a Gmail one. Fixing that
 needs Gmail "send as" with the mail administrator, or Google Workspace on the domain.
 
+## End to end on real mail, 17 September 2026 ~03:02 IST
+
+The whole loop ran unattended, on real email, with every step measured rather than
+assumed. This is the first mail the system has ever sent.
+
+```
+employee emails support@allcheckservices.com
+  -> Zimbra forwards to simpleticketssupport@gmail.com
+  -> Durable Object alarm fires (cron does not work on this account)
+  -> sender authorised, ticket + message + outbox committed in ONE D1 batch
+  -> Gmail SMTP accepts the acknowledgement
+  -> employee replies
+  -> reply threads onto the SAME ticket: no duplicate, no second acknowledgement
+```
+
+| Step | Evidence |
+| --- | --- |
+| Forward carries the published address | uid 9 `to: ['support@allcheckservices.com']` |
+| Original sender preserved | tickets 7 and 8 requester = `mayur.kulkarni@allcheckservices.com` |
+| Ticker drives it | tick at 21:28:26Z `ingested: 2, sent: 2, error: null` |
+| **Mail actually sent** | outbox 1 and 2 `accepted`, attempts 1, Gmail replies `250 2.0.0 OK 1789594103 ...` and `250 2.0.0 OK 1789594106 ...` |
+| Body extracted from Outlook HTML | `"New test ticket\n\nGet Outlook for Mac"` |
+| Acknowledgement threads to the original | `inReplyTo: <3E2198CD-...@hxcore.ol>` |
+| Reply threads onto its ticket | uid 10 -> ticket 7; tickets stayed 2, messages 2 -> 3 |
+| A reply sends no second acknowledgement | tick `ingested: 1, sent: 0` |
+| Authorisation works on real traffic | uid 8, a GitHub notification in the same mailbox, `rejected_sender` |
+
+Two details worth keeping, because both would have looked fine while being wrong:
+
+**The reply matched through the `outbox` table, not `messages`.** A reply to our own
+acknowledgement quotes the acknowledgement's Message-ID (`<ack.7...@simpletickets>`),
+which exists nowhere in the inbound messages. Had the lookup searched only mail we
+received, every reply-to-acknowledgement would have opened a fresh ticket, and the fault
+would only have surfaced later as conversations mysteriously fragmenting.
+
+**A reply must not be acknowledged.** `sent: 0` on that tick is correct behaviour, not a
+missing feature: acknowledging a reply would answer the employee's own mail automatically
+every time they wrote, which is a loop with their client.
+
+### The Durable Object alarm
+
+Cron triggers do not fire on this account, so a Durable Object alarm drives ingestion
+instead: it reschedules itself every two minutes, stays inside Cloudflare so no third
+party holds `ADMIN_TOKEN`, and - because a Durable Object is single-threaded - two ticks
+can never overlap. That is the mutual exclusion T010 asks for, which cron never provided.
+
+The tick reschedules **before** doing its work. The other order means one failed poll ends
+the chain permanently, with no alarm ever set again and nothing raised. It also swallows
+the error rather than throwing, because a throwing alarm is retried by the platform and
+the retry would set a second alarm on top of the first, leaving two chains ticking.
+
+**Known weakness:** nothing restarts the chain if it ever stops - an evicted object or a
+lost alarm ends it silently. The reschedule-first ordering protects against failures
+inside a tick, not against the chain ending. A watchdog that notices "no tick in N
+minutes" is needed before this is relied on in production.
+
 ## Primary sources
 
 - [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)

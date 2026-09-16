@@ -11,7 +11,7 @@ An internal employee can request IT help by email, track the conversation throug
 | ID | Requirement |
 | --- | --- |
 | R01 | Accept employee requests only from `@allcheckservices.com` sent to `support@allcheckservices.com`. The sender rule is unchanged and implemented. **The Zimbra clause is withdrawn:** a Cloudflare Worker cannot reach `mail.allcheckservices.com` on any port, so the mailbox is now `simpleticketssupport@gmail.com`, polled over IMAP. How mail reaches it from the published address is open point 5. |
-| R02 | Poll for new mail every two minutes. Create a ticket and send an acknowledgement containing its ticket number. |
+| R02 | Poll for new mail every two minutes. Create a ticket and send an acknowledgement containing its ticket number. **Implemented and proved on real mail, 17 September 2026** — driven by a Durable Object alarm rather than a cron trigger, because cron does not fire on this account. |
 | R03 | Append email replies to the same ticket. Employees use email only. |
 | R04 | Five IT staff work exclusively in the dashboard; it is the only place they read tickets, reply, add internal notes and change status, priority or assignment. Staff never work a ticket by email, and a reply to an IT notification email is not ingested. All can view/update every ticket, change priority, and manually reassign tickets. |
 | R05 | One staff member is also admin and creates staff accounts, disables them and manages settings. No public signup. Disabling an account ends dashboard access and redistributes that person's open tickets under R08. |
