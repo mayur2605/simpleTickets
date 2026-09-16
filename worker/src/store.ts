@@ -388,12 +388,17 @@ export async function appendReply(
     db
       .prepare(`INSERT INTO ingest_log (uid, outcome, ticket_id, at) VALUES (?, 'ticket', ?, ?)`)
       .bind(input.uid, input.ticketId, now),
+    // Always bump updated_at: the queue is ordered by it, so a ticket with a
+    // new employee reply must rise to the top. Bumping only on reopen made the
+    // tickets most needing attention sink below untouched ones.
+    db.prepare(`UPDATE tickets SET updated_at = ? WHERE id = ?`).bind(now, input.ticketId),
+    // Reopening is separate, and only applies to a ticket that was closed out.
     db
       .prepare(
-        `UPDATE tickets SET status = 'In Progress', updated_at = ?
+        `UPDATE tickets SET status = 'In Progress'
           WHERE id = ? AND status IN ('Resolved', 'Closed')`,
       )
-      .bind(now, input.ticketId),
+      .bind(input.ticketId),
   ]);
 }
 
