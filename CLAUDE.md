@@ -204,6 +204,38 @@ which the deploy path does not cover. It never deploys.
 
 Local deploys still work: `npm run deploy` in `worker/`, with wrangler's own OAuth login.
 
+## Connecting the dashboard to real data
+
+The dashboard shows built-in **sample data** unless a backend is configured. That
+fallback is load-bearing: the browser smoke test drives the UI by its labels and asserts
+exact row counts against the `seed` array, and a design review has to work without a
+backend.
+
+To see real tickets, create `prototype/.env.local` (git-ignored, and the pre-commit hook
+refuses to stage any `.env` file):
+
+```
+VITE_API_URL=https://simpletickets-api.simpleticketssupport.workers.dev
+VITE_ADMIN_TOKEN=<contents of worker/.admin-token>
+```
+
+**This is not safe for staff use, and the limit is worth understanding before anyone is
+given the URL.** `VITE_` variables are baked into the browser bundle, and there is one
+shared admin token — so anyone who can open the dashboard has full API access, and the
+server cannot tell one staff member from another. Nothing the dashboard records is an
+audit trail of who did what. It is fine for a local review build against test data.
+Per-person sign-in is R06, blocked on the Workers PBKDF2 cap.
+
+A configured API that **fails** shows an error and no tickets — deliberately never sample
+data. Invented tickets displayed when the real ones could not be loaded would have IT
+working a queue that does not exist. The banner always states which mode is active,
+because a dashboard that looks identical connected or not is how someone replies to a
+ticket they think is a demo.
+
+Browser calls need CORS, which the worker attaches once at the `/api/` boundary.
+Origins are allow-listed in `worker/src/cors.ts` — add one there if the dashboard is ever
+served from somewhere new, and do not switch it to reflecting arbitrary origins.
+
 ## The smoke test
 
 `prototype/checks/smoke.mjs` is a single linear Playwright script, not a test runner: no watch mode, no filters, no way to run one case. It starts **its own Vite server on port 5174** (`strictPort`), so it does not touch a preview server on 5173 — but two concurrent smoke runs will collide on 5174.

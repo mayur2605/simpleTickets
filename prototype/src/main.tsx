@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   FluentProvider,
@@ -35,6 +35,7 @@ import "@fontsource/geist/500.css";
 import "@fontsource/geist/600.css";
 import "./style.css";
 import "./brand.css";
+import { apiConfigured, fetchTickets, type ApiTicket } from "./api";
 type Ticket = {
   id: number;
   title: string;
@@ -45,6 +46,43 @@ type Ticket = {
   due: string;
   body: string;
 };
+/**
+ * Turn an API ticket into the shape this UI already speaks.
+ *
+ * The two differ because the prototype was written before the backend existed.
+ * Mapping here rather than renaming everything keeps the change small and the
+ * browser smoke test - which drives the UI by its existing labels - intact.
+ */
+function fromApi(ticket: ApiTicket): Ticket {
+  const due =
+    ticket.overdue && ticket.minutesOverdue !== null
+      ? `Overdue by ${describeMinutes(ticket.minutesOverdue)}`
+      : ticket.met
+        ? "Responded"
+        : ticket.minutesRemaining === null
+          ? "No deadline"
+          : `Due in ${describeMinutes(ticket.minutesRemaining)}`;
+  return {
+    id: ticket.id,
+    title: ticket.subject,
+    person: ticket.requester,
+    status: ticket.status,
+    priority: ticket.priority,
+    // The UI expects a string; an unassigned ticket says so rather than
+    // showing an empty cell that reads as a rendering fault.
+    owner: ticket.owner ?? "Unassigned",
+    due,
+    body: "",
+  };
+}
+
+function describeMinutes(minutes: number): string {
+  if (minutes < 60) return `${String(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${String(hours)}h`;
+  return `${String(Math.floor(hours / 24))}d`;
+}
+
 const seed: Ticket[] = [
   {
     id: 1048,
@@ -161,7 +199,11 @@ function Status({ value }: { value: string }) {
   );
 }
 function App() {
+  // Sample data unless a backend is configured. The smoke test and any
+  // design review run with no API and must keep working.
   const [tickets, setTickets] = useState(seed),
+    [live, setLive] = useState(false),
+    [loadError, setLoadError] = useState(""),
     [page, setPage] = useState("All Tickets"),
     [query, setQuery] = useState(""),
     [filter, setFilter] = useState("All statuses"),
@@ -180,6 +222,28 @@ function App() {
     [name, setName] = useState(""),
     [body, setBody] = useState(""),
     [templateStatus, setTemplateStatus] = useState("No change");
+
+  useEffect(() => {
+    if (!apiConfigured()) return;
+    let cancelled = false;
+    void fetchTickets()
+      .then((result) => {
+        if (cancelled) return;
+        setTickets(result.tickets.map(fromApi));
+        setLive(true);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        // Deliberately does NOT fall back to sample data on failure. Showing
+        // invented tickets when the real ones cannot be loaded would be worse
+        // than showing nothing: IT would work a queue that is not real.
+        setTickets([]);
+        setLoadError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const draft = note ? noteDraft : replyDraft;
   const setDraft = note ? setNoteDraft : setReplyDraft;
   const current = tickets.find((t) => t.id === selected);
@@ -321,10 +385,22 @@ function App() {
             </Badge>
           </header>
           <main>
-            <div className="preview">
-              Sample data only. Changes last until you refresh. No emails are
-              sent.
-            </div>
+            {loadError ? (
+              <div className="preview" role="alert">
+                Could not load tickets: {loadError}. Nothing is shown rather
+                than sample data, so this queue is never mistaken for real.
+              </div>
+            ) : live ? (
+              <div className="preview">
+                Live tickets from the support mailbox. Replies here send real
+                email.
+              </div>
+            ) : (
+              <div className="preview">
+                Sample data only. Changes last until you refresh. No emails are
+                sent.
+              </div>
+            )}
             {notice && (
               <div className="notice" role="status">
                 <CheckmarkCircle20Regular />
