@@ -446,3 +446,150 @@ export async function outboxSummary(db: D1Database): Promise<Record<string, numb
   }
   return summary;
 }
+
+/* ------------------------------------------------------------- dashboard */
+
+export interface TicketRow {
+  id: number;
+  subject: string;
+  requester: string;
+  status: string;
+  priority: string;
+  owner: string | null;
+  created_at: string;
+  updated_at: string;
+  messages: number;
+}
+
+/** Newest first, which is the order IT works in. */
+export async function listTickets(db: D1Database, limit = 100): Promise<TicketRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT t.id, t.subject, t.requester, t.status, t.priority, t.owner,
+              t.created_at, t.updated_at,
+              (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS messages
+         FROM tickets t
+        ORDER BY t.updated_at DESC, t.id DESC
+        LIMIT ?`,
+    )
+    .bind(limit)
+    .all<TicketRow>();
+  return rows.results;
+}
+
+export interface TicketDetail {
+  ticket: TicketRow;
+  messages: {
+    id: number;
+    direction: string;
+    author: string;
+    body: string;
+    message_id: string | null;
+    created_at: string;
+  }[];
+}
+
+export async function getTicket(db: D1Database, id: number): Promise<TicketDetail | null> {
+  const ticket = await db
+    .prepare(
+      `SELECT t.id, t.subject, t.requester, t.status, t.priority, t.owner,
+              t.created_at, t.updated_at,
+              (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS messages
+         FROM tickets t WHERE t.id = ?`,
+    )
+    .bind(id)
+    .first<TicketRow>();
+  if (ticket === null) return null;
+
+  const messages = await db
+    .prepare(
+      `SELECT id, direction, author, body, message_id, created_at
+         FROM messages WHERE ticket_id = ? ORDER BY id`,
+    )
+    .bind(id)
+    .all<TicketDetail["messages"][number]>();
+
+  return { ticket, messages: messages.results };
+}
+
+/**
+ * Message-IDs on a ticket's thread, oldest first, so a reply can be threaded
+ * into the employee's existing conversation. Includes what we have sent as well
+ * as what we received - the employee's client may be replying to either.
+ */
+export async function threadIds(db: D1Database, ticketId: number): Promise<string[]> {
+  const rows = await db
+    .prepare(
+      `SELECT message_id AS id, created_at FROM messages
+         WHERE ticket_id = ? AND message_id IS NOT NULL AND direction != 'note'
+        UNION ALL
+       SELECT message_id AS id, created_at FROM outbox WHERE ticket_id = ?
+        ORDER BY created_at`,
+    )
+    .bind(ticketId, ticketId)
+    .all<{ id: string }>();
+  return rows.results.map((row) => row.id);
+}
+
+/**
+ * Record a public reply and queue it for delivery, in one batch.
+ *
+ * The visible message and the outgoing intent commit together: a reply shown in
+ * the dashboard that was never queued would have IT believing they answered.
+ */
+export async function addReply(
+  db: D1Database,
+  input: {
+    ticketId: number;
+    author: string;
+    body: string;
+    messageId: string;
+    recipient: string;
+    payload: string;
+  },
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO messages (ticket_id, direction, author, body, message_id, created_at)
+         VALUES (?, 'outbound', ?, ?, ?, ?)`,
+      )
+      .bind(input.ticketId, input.author, input.body, input.messageId, now),
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO outbox
+           (ticket_id, intent, recipient, message_id, payload, state,
+            attempts, next_attempt_at, created_at, updated_at)
+         VALUES (?, 'reply', ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+      )
+      .bind(input.ticketId, input.recipient, input.messageId, input.payload, now, now, now),
+    db.prepare(`UPDATE tickets SET updated_at = ? WHERE id = ?`).bind(now, input.ticketId),
+  ]);
+}
+
+/**
+ * Record an internal note.
+ *
+ * Writes to `messages` only. There is deliberately NO outbox statement here and
+ * no code path from a note to an OutgoingMessage: the constitution forbids an
+ * internal note reaching employee email, and the safest guarantee is that the
+ * sending machinery can never be handed one.
+ */
+export async function addNote(
+  db: D1Database,
+  ticketId: number,
+  author: string,
+  body: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO messages (ticket_id, direction, author, body, message_id, created_at)
+         VALUES (?, 'note', ?, ?, NULL, ?)`,
+      )
+      .bind(ticketId, author, body, now),
+    db.prepare(`UPDATE tickets SET updated_at = ? WHERE id = ?`).bind(now, ticketId),
+  ]);
+}

@@ -11,7 +11,16 @@
  */
 import { ingest, flushOutbox, type Env } from "./pipeline";
 import { peekRecent } from "./imap";
-import { readCheckpoint, outboxSummary } from "./store";
+import {
+  readCheckpoint,
+  outboxSummary,
+  listTickets,
+  getTicket,
+  threadIds,
+  addReply,
+  addNote,
+} from "./store";
+import { buildReply } from "./reply";
 import { isAuthorised } from "./auth";
 
 export { Ticker } from "./ticker";
@@ -40,6 +49,75 @@ export default {
       const id = env.TICKER.idFromName("ingest-ticker");
       const action = url.pathname.slice("/ticker".length) || "/status";
       return env.TICKER.get(id).fetch(new Request(`https://ticker${action}`, request));
+    }
+
+    // ---- dashboard API ----------------------------------------------------
+    // Everything here is behind the same single admin token as the operational
+    // routes. That is NOT multi-user authentication: there is one shared
+    // secret, so the API cannot tell one staff member from another and nothing
+    // here may be treated as an audit trail of who did what. Real per-staff
+    // sign-in is R06, still blocked on the Workers PBKDF2 cap.
+
+    if (url.pathname === "/api/tickets" && request.method === "GET") {
+      return Response.json({ tickets: await listTickets(env.DB) });
+    }
+
+    const ticketMatch = /^\/api\/tickets\/(\d+)(\/reply|\/note)?$/.exec(url.pathname);
+    if (ticketMatch !== null) {
+      const id = Number(ticketMatch[1]);
+      const detail = await getTicket(env.DB, id);
+      if (detail === null) {
+        return Response.json({ error: "No such ticket" }, { status: 404 });
+      }
+
+      if (request.method === "GET" && ticketMatch[2] === undefined) {
+        return Response.json(detail);
+      }
+
+      if (request.method === "POST") {
+        // Request bodies are an external boundary: validate, never cast.
+        const raw: unknown = await request.json().catch(() => null);
+        const payload: Record<string, unknown> =
+          typeof raw === "object" && raw !== null && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : {};
+        const body = payload["body"];
+        if (typeof body !== "string" || body.trim().length === 0) {
+          return Response.json({ error: "A body is required" }, { status: 400 });
+        }
+        const author = typeof payload["author"] === "string" ? payload["author"] : "IT";
+
+        // An internal note never touches the outbox. See store.addNote.
+        if (ticketMatch[2] === "/note") {
+          await addNote(env.DB, id, author, body);
+          return Response.json({ added: "note" });
+        }
+
+        if (ticketMatch[2] === "/reply") {
+          const message = buildReply({
+            ticketNumber: id,
+            ticketSubject: detail.ticket.subject,
+            requester: detail.ticket.requester,
+            supportAddress: `SimpleTickets <${env.GMAIL_USER}>`,
+            body,
+            threadMessageIds: await threadIds(env.DB, id),
+            date: new Date(),
+          });
+          await addReply(env.DB, {
+            ticketId: id,
+            author,
+            body,
+            messageId: message.messageId,
+            recipient: detail.ticket.requester,
+            payload: JSON.stringify(message),
+          });
+          // Queued, not sent. The ticker delivers it on its next tick, so a
+          // slow or refusing SMTP server cannot block the dashboard.
+          return Response.json({ queued: true, messageId: message.messageId });
+        }
+      }
+
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
     }
 
     if (url.pathname === "/status") {
