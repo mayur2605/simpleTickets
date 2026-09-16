@@ -505,9 +505,48 @@ Two documented Cloudflare behaviours also invalidate the earlier sampling window
 - **Past Cron Events** can take **up to 30 minutes** to display on a new Worker, so a
   dashboard reading of 0 was never meaningful either.
 
-A clean measurement is running now: D1 baseline cleared to 0 tickets / 0 log rows with
-`last_uid = 6` and uid 7 pending, polled every 45 s, alongside a real 5-minute
-`wrangler tail`, with no manual `/poll` issued. Result to be recorded here.
+### Result: the cron does not fire
+
+Measured 20:35:27Z–20:42:25Z, a window sitting 22–29 minutes after the last schedule
+change, so propagation was long finished. D1 baseline cleared to 0 tickets / 0 log rows
+with `last_uid = 6` and uid 7 pending. Polled every 45 s. No manual `/poll` issued.
+
+```
+START   baseline: logs=0 tickets=0 last_uid=6 updated_at=2000-01-01T00:00:00Z
+check1..check9  l:0  t:0  last_uid:6  updated_at:"2000-01-01T00:00:00Z"
+=== NO CHANGE after ~7 minutes — cron did NOT fire ===
+```
+
+Four scheduled slots — 20:36, 20:38, 20:40, 20:42 — passed with no ingestion of the
+pending uid 7, and the checkpoint's sentinel `updated_at` never moved.
+
+A `wrangler tail` ran alongside it for five minutes and captured **0 bytes, not even its
+own startup banner**. That is treated as inconclusive rather than as corroboration; the
+D1 watcher is the evidence, because it reads live remote state and depends on no local
+tooling.
+
+This is **not our configuration**. Verified against the API, not the dashboard: the
+schedule is registered, the deployed script exports `['scheduled', 'fetch']`, exactly one
+version is at 100%, and the account is not suspended. Manual `POST /poll` against the
+same deployed code works every time and has produced every ticket that exists.
+
+Context worth keeping: the Cloudflare community carried multiple reports of exactly this
+symptom dated the same day — cron registered, visible via `/schedules`, never invoking,
+zero events in `workersInvocationsAdaptive`. The account here was created at 19:37:56Z,
+about two hours before these measurements, so a new-account gate is plausible but
+unproven.
+
+The schedule was re-registered by `PUT .../schedules` at 20:42:42Z to force a fresh
+propagation. Its deadline is 20:57:42Z; the database was left in the test state
+(0/0/0, `last_uid = 6`, uid 7 pending) so a re-measurement needs no setup.
+
+If the trigger stays dead, the fallbacks in order of preference are: a Durable Object
+alarm that reschedules itself (stays inside Cloudflare, no external secret, no dependency
+on the cron subsystem); an external scheduler calling the token-gated `POST /poll` (puts
+`ADMIN_TOKEN` in a third party, and GitHub Actions' scheduled runs are capped at 5-minute
+granularity and routinely delayed, which breaks R02's two minutes); or escalating to
+Cloudflare. **Do not add a fallback before re-measuring** — it would be permanent
+complexity bought against a possibly transient platform fault.
 
 ## Primary sources
 
