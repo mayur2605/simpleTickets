@@ -22,8 +22,10 @@ import {
   staffWorkloads,
   addStaff,
   setAvailability,
+  setStatus,
 } from "./store";
 import { buildReply } from "./reply";
+import { transitionRule, STATUSES, type Status } from "./transitions";
 import { isAuthorised } from "./auth";
 
 export { Ticker } from "./ticker";
@@ -98,7 +100,7 @@ export default {
       return Response.json({ tickets: await listTickets(env.DB) });
     }
 
-    const ticketMatch = /^\/api\/tickets\/(\d+)(\/reply|\/note)?$/.exec(url.pathname);
+    const ticketMatch = /^\/api\/tickets\/(\d+)(\/reply|\/note|\/status)?$/.exec(url.pathname);
     if (ticketMatch !== null) {
       const id = Number(ticketMatch[1]);
       const detail = await getTicket(env.DB, id);
@@ -127,6 +129,55 @@ export default {
         if (ticketMatch[2] === "/note") {
           await addNote(env.DB, id, author, body);
           return Response.json({ added: "note" });
+        }
+
+        if (ticketMatch[2] === "/status") {
+          const target = payload["status"];
+          if (typeof target !== "string" || !STATUSES.includes(target as Status)) {
+            return Response.json(
+              { error: `status must be one of: ${STATUSES.join(", ")}` },
+              { status: 400 },
+            );
+          }
+          const rule = transitionRule(detail.ticket.status as Status, target as Status);
+
+          if (rule.kind === "invalid") {
+            return Response.json({ error: rule.reason }, { status: 409 });
+          }
+
+          if (rule.kind === "immediate") {
+            await setStatus(env.DB, id, target);
+            return Response.json({ status: target, applied: "immediately" });
+          }
+
+          // R28: queue the message that justifies the change and hang the
+          // transition off it. The status does not move until the server
+          // accepts - recordAcceptance applies both in one batch.
+          const message = buildReply({
+            ticketNumber: id,
+            ticketSubject: detail.ticket.subject,
+            requester: detail.ticket.requester,
+            supportAddress: `SimpleTickets <${env.GMAIL_USER}>`,
+            body,
+            threadMessageIds: await threadIds(env.DB, id),
+            date: new Date(),
+          });
+          await addReply(env.DB, {
+            ticketId: id,
+            author,
+            body,
+            messageId: message.messageId,
+            recipient: detail.ticket.requester,
+            payload: JSON.stringify(message),
+            intent: rule.intent,
+            pendingStatus: target,
+          });
+          return Response.json({
+            queued: true,
+            intent: rule.intent,
+            pendingStatus: target,
+            note: "Status changes when the mail server accepts this message (R28).",
+          });
         }
 
         if (ticketMatch[2] === "/reply") {

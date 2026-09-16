@@ -556,6 +556,9 @@ export async function addReply(
     messageId: string;
     recipient: string;
     payload: string;
+    intent?: OutboxIntent;
+    /** R28: applied only when the server accepts this message. */
+    pendingStatus?: string;
   },
 ): Promise<void> {
   const now = new Date().toISOString();
@@ -570,10 +573,20 @@ export async function addReply(
       .prepare(
         `INSERT OR IGNORE INTO outbox
            (ticket_id, intent, recipient, message_id, payload, state,
-            attempts, next_attempt_at, created_at, updated_at)
-         VALUES (?, 'reply', ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+            attempts, next_attempt_at, pending_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
       )
-      .bind(input.ticketId, input.recipient, input.messageId, input.payload, now, now, now),
+      .bind(
+        input.ticketId,
+        input.intent ?? "reply",
+        input.recipient,
+        input.messageId,
+        input.payload,
+        now,
+        input.pendingStatus ?? null,
+        now,
+        now,
+      ),
     db.prepare(`UPDATE tickets SET updated_at = ? WHERE id = ?`).bind(now, input.ticketId),
   ]);
 }
@@ -659,4 +672,13 @@ export async function setAvailability(
     .bind(available ? 1 : 0, name)
     .run();
   return result.meta.changes > 0;
+}
+
+/** Apply a status that needs no email (R09). */
+export async function setStatus(db: D1Database, id: number, status: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db
+    .prepare(`UPDATE tickets SET status = ?, updated_at = ? WHERE id = ?`)
+    .bind(status, now, id)
+    .run();
 }
