@@ -18,8 +18,25 @@ database_name = "simpletickets"
 database_id = "3f3e60f6-f181-4e56-a387-89678a34d538"
 
 # R02: check for new mail every two minutes.
+#
+# Kept, but it is NOT what drives the system. Cron triggers do not fire on this
+# account - measured 17 September 2026 with a probe worker that had no HTTP
+# surface, so only the scheduler could have invoked it, and it never ran. See
+# docs/stack-validation.md. The Ticker Durable Object below is the real driver;
+# this stays because it costs nothing and is idempotent if it ever starts
+# working.
 [triggers]
 crons = ["*/2 * * * *"]
+
+# The alarm-driven replacement for cron. Single-threaded, so two ticks can never
+# overlap - the mutual exclusion cron never gave us.
+[[durable_objects.bindings]]
+name = "TICKER"
+class_name = "Ticker"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Ticker"]
 
 [vars]
 GMAIL_USER = "simpleticketssupport@gmail.com"
