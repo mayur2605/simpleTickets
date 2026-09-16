@@ -4,3 +4,8 @@ compatibility_date = "2026-09-16"
 
 # RESEND_WEBHOOK_SECRET is NOT stored here. Set it as a deployment secret:
 #   npx wrangler secret put RESEND_WEBHOOK_SECRET
+
+# Persist logs so a webhook delivery can be inspected after the fact rather
+# than only while `wrangler tail` happens to be running.
+[observability]
+enabled = true

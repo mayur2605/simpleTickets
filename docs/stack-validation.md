@@ -111,6 +111,61 @@ purchased:
 D1, R2, cron scheduling and MIME parsing remain unmeasured; they are not worth measuring
 until the transport question is settled.
 
+## Inbound mail proved working over Resend, 17 September 2026
+
+A real message from a company address reached the webhook receiver end to end on the
+first attempt: Resend accepted it for `support@tickets.allcheckservices.com`, signed the
+delivery, and our Worker verified the signature and returned `200` on attempt 1.
+
+This routes around the Zimbra firewall block entirely. Nothing has to reach out to the
+mail server any more, so the unreachability recorded above stops being a blocker for
+receiving. It does not resolve sending, which still has to be proved.
+
+### The webhook payload is metadata only
+
+`email.received` delivers exactly these fields under `data`:
+
+```
+attachments, bcc, cc, created_at, email_id, from, message_id, received_for, subject, to
+```
+
+There is **no message body and there are no `In-Reply-To` or `References` headers**, which
+the Resend feature page implies are included. Both matter: the body is the ticket
+content, and the threading headers are what R03 and the plan's participant-authorised
+threading depend on.
+
+### Ingestion is therefore two steps, not one
+
+1. `email.received` webhook — signed, fast, carries `email_id`. Verify the Svix signature
+   before trusting anything in it.
+2. `GET https://api.resend.com/emails/receiving/{email_id}` with an API key — returns
+   `html`, `text`, a `headers` object, attachment metadata with download URLs, and a
+   signed URL for the raw original message.
+
+Consequences to design around, none of them resolved yet:
+
+- A Resend API key becomes a stored secret, separate from the webhook signing secret.
+- Step 2 is an outbound HTTPS call that can fail independently of step 1. The webhook
+  must not be acknowledged in a way that loses the message if the fetch fails, and Svix
+  retries mean step 1 can arrive more than once for one email. Deduplicate on `email_id`.
+- Attachments arrive as URLs to fetch, so R12's 5 MB aggregate limit is enforced at fetch
+  time against real bytes, not against a declared size.
+- Threading data comes only from step 2, so a ticket cannot be threaded from the webhook
+  alone.
+
+### What this does to the existing plan
+
+`specs/001-email-ticketing/plan.md` and T010 describe two-minute IMAP polling with a
+UIDVALIDITY/UID checkpoint, a durable launch cutoff and UID-based deduplication. If
+Resend inbound is accepted, most of that is replaced by signed push delivery plus
+`email_id` deduplication, and R02's "poll every two minutes" becomes "delivered on
+arrival". That is a product-visible change and has not been accepted yet, so the plan
+and tasks are left as written pending the user's decision.
+
+Still unproven: outbound sending as this domain, delivery-failure visibility
+(`email.bounced` and `email.failed` are not yet subscribed), attachment fetching, and
+anything about staff authentication.
+
 ## Next validation gate
 
 1. Use a temporary Zimbra test mailbox with secure local secret entry; do not paste passwords in conversation or commit them.
