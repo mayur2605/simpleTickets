@@ -12,6 +12,43 @@ export interface FetchedMessage {
   subject: string;
   body: string;
   messageId: string | null;
+  /** Raw In-Reply-To header, for threading a reply onto its ticket (R03). */
+  inReplyTo: string | null;
+  /** Raw References header. The envelope does not carry it, so it is fetched. */
+  references: string | null;
+  /** The fetched header block, for auto-reply detection. */
+  rawHeaders: string;
+}
+
+/**
+ * Pulls one header out of a raw header block, keeping folded continuation
+ * lines.
+ *
+ * Walked line by line rather than matched with one regular expression. The
+ * regex version looked right and was wrong: with the multiline flag its `$`
+ * matched the end of the FIRST line, so a folded References header lost
+ * everything after its first entry - which silently breaks threading for
+ * exactly the long conversations that need it most.
+ *
+ * RFC 5322: a header continues onto the next line when that line begins with a
+ * space or tab.
+ */
+export function readHeader(raw: string, name: string): string | null {
+  const target = `${name.toLowerCase()}:`;
+  let value: string | null = null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (value !== null) {
+      if (/^[ \t]/.test(line)) {
+        value += ` ${line.trim()}`;
+        continue;
+      }
+      break;
+    }
+    if (line.toLowerCase().startsWith(target)) {
+      value = line.slice(target.length).trim();
+    }
+  }
+  return value;
 }
 
 export interface MailboxRead {
@@ -68,7 +105,6 @@ export async function readMailboxMarkers(
   }
 }
 
-
 /**
  * Find the part worth showing on a ticket.
  *
@@ -76,7 +112,7 @@ export async function readMailboxMarkers(
  * send HTML only — this test message did. Returns null for a message with no
  * structure to walk, where the whole body is the text.
  */
-function findBodyPart(
+export function findBodyPart(
   node: MessageStructureObject | undefined,
 ): { part: string; type: string } | null {
   if (node === undefined) return null;
@@ -119,11 +155,14 @@ async function readBody(
   structure: MessageStructureObject | undefined,
 ): Promise<string> {
   const chosen = findBodyPart(structure);
-  const { content } = await client.download(
-    String(uid),
-    chosen === null ? "TEXT" : chosen.part,
-    { uid: true },
-  );
+  // imapflow returns a Node stream whose types do not resolve without
+  // @types/node, which is deliberately absent because this runs on workerd.
+  // Each chunk is validated in the loop below, so the unresolved type stops
+  // here rather than spreading.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { content } = await client.download(String(uid), chosen === null ? "TEXT" : chosen.part, {
+    uid: true,
+  });
   const chunks: Uint8Array[] = [];
   let total = 0;
   for await (const chunk of content) {
@@ -151,10 +190,14 @@ export async function readNewMail(
   const client = makeClient(user, appPassword);
   // Capture rather than discard: an unhandled 'error' event would crash the
   // isolate, but swallowing it hides why a connection died.
-  let socketError: string | null = null;
+  // Held in an object, not a `let`: the assignment below happens inside an
+  // error-event closure, and TypeScript's control-flow analysis cannot see it.
+  // With a plain variable it narrows to null at the throw site and the socket
+  // detail is silently dropped - exactly when a failure needs explaining.
+  const socket: { error: string | null } = { error: null };
   client.on("error", (err: unknown) => {
-    if (socketError === null) {
-      socketError = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    if (socket.error === null) {
+      socket.error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     }
   });
 
@@ -176,7 +219,31 @@ export async function readNewMail(
     // the streaming read does not.
     const fetched = await client.fetchAll(
       { uid: `${String(sinceUid + 1)}:*` },
-      { uid: true, envelope: true, bodyStructure: true },
+      // `references` is not in the IMAP envelope, so it has to be asked for
+      // explicitly. Without it a reply whose client omits In-Reply-To would
+      // open a second ticket instead of joining its own conversation.
+      {
+        uid: true,
+        envelope: true,
+        bodyStructure: true,
+        headers: [
+          // Threading (R03).
+          "in-reply-to",
+          "references",
+          // Automatic-message detection (RFC 3834 and older conventions).
+          "auto-submitted",
+          "precedence",
+          "x-autoreply",
+          "x-autorespond",
+          "return-path",
+          // Bounce detection (R15). content-type carries
+          // report-type=delivery-status; from identifies mailer-daemon. Without
+          // BOTH of these isBounce can never match, and every delivery failure
+          // is misfiled as an out-of-office.
+          "content-type",
+          "from",
+        ],
+      },
       { uid: true },
     );
 
@@ -194,6 +261,19 @@ export async function readNewMail(
             : (sender.address ?? "");
 
       const body = await readBody(client, message.uid, message.bodyStructure);
+      // imapflow hands headers back as a Node Buffer, whose type does not
+      // resolve here (@types/node is deliberately not installed - this runs on
+      // workerd, not Node). Validate the shape instead of trusting an
+      // unresolvable type: Buffer extends Uint8Array, so this decodes correctly
+      // at runtime and degrades to "" rather than throwing if the shape ever
+      // changes.
+      const rawHeaders: unknown = message.headers;
+      const headers =
+        typeof rawHeaders === "string"
+          ? rawHeaders
+          : rawHeaders instanceof Uint8Array
+            ? new TextDecoder().decode(rawHeaders)
+            : "";
 
       messages.push({
         uid: message.uid,
@@ -201,6 +281,9 @@ export async function readNewMail(
         subject: envelope?.subject ?? "(no subject)",
         body,
         messageId: envelope?.messageId ?? null,
+        inReplyTo: envelope?.inReplyTo ?? readHeader(headers, "in-reply-to"),
+        references: readHeader(headers, "references"),
+        rawHeaders: headers,
       });
     }
 
@@ -212,7 +295,7 @@ export async function readNewMail(
   } catch (error) {
     const base = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `IMAP failed at ${stage}: ${base}${socketError === null ? "" : ` (socket: ${socketError})`}`,
+      `IMAP failed at ${stage}: ${base}${socket.error === null ? "" : ` (socket: ${socket.error})`}`,
     );
   } finally {
     try {

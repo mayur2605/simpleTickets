@@ -540,6 +540,43 @@ The schedule was re-registered by `PUT .../schedules` at 20:42:42Z to force a fr
 propagation. Its deadline is 20:57:42Z; the database was left in the test state
 (0/0/0, `last_uid = 6`, uid 7 pending) so a re-measurement needs no setup.
 
+### Confirmed dead, 17 September 2026 ~02:43 IST
+
+Re-measured after the schedule was re-registered by a Workers Builds deploy at 20:53:19Z,
+and independently with a second, purpose-built worker.
+
+| Worker | Cron | Propagation complete | Slots missed after |
+| --- | --- | --- | --- |
+| `cron-probe` | `* * * * *` | 21:10Z | 21:10, 21:11, 21:12 - three consecutive |
+| `simpletickets-api` | `*/2 * * * *` | 21:08:19Z | 21:10, 21:12 - two consecutive |
+
+`cron-probe` is the decisive measurement. It was deployed with **no `fetch` handler and
+`workers_dev = false`**, so nothing on the internet can invoke it: any tick recorded in its
+KV namespace could only have come from the scheduler. The namespace stayed `[]`
+throughout. That removes our worker's configuration, its bindings, its code and its
+secrets from the list of suspects - the scheduler is simply not running anything on this
+account.
+
+Everything verified against the API rather than the dashboard: schedule registered,
+handlers `['scheduled', 'fetch']`, one version at 100%, account not suspended, account
+created 19:37:56Z the same evening. Manual `POST /poll` against the same deployed code
+works every time.
+
+Three measurement errors were made and corrected while establishing this, all the same
+shape - something that was not evidence being read as evidence:
+
+1. `wrangler tail` runs used `timeout`, which does not exist on macOS. The command died
+   instantly; an empty file was read as "no cron events".
+2. An `ingest_log` row count was taken after a partial reset that left an earlier row in
+   place, and the leftover row was read as new cron activity.
+3. A KV watcher used `wrangler kv key get`, which errors when a key is absent and prints a
+   version-upgrade notice; the catch-all branch read that notice as a value and announced
+   a tick. Replaced with `kv key list`, which returns clean JSON.
+
+The lesson worth keeping: every one of these produced a *confident* wrong answer, and each
+was caught only by re-deriving the result a different way. A single green signal from a
+tool that can fail silently is not a measurement.
+
 If the trigger stays dead, the fallbacks in order of preference are: a Durable Object
 alarm that reschedules itself (stays inside Cloudflare, no external secret, no dependency
 on the cron subsystem); an external scheduler calling the token-gated `POST /poll` (puts

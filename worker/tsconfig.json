@@ -1,9 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": [
-      "ES2022"
-    ],
+    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
@@ -17,11 +15,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "forceConsistentCasingInFileNames": true,
-    "types": [
-      "@cloudflare/workers-types"
-    ]
+    "types": ["@cloudflare/workers-types"]
   },
-  "include": [
-    "src"
-  ]
+  "include": ["src"]
 }

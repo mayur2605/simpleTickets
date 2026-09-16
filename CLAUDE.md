@@ -107,19 +107,64 @@ The backend lives in `worker/` and is its own npm package with its own gate:
 ```bash
 cd worker
 npm ci
-npm run verify        # typecheck + unit tests + `wrangler deploy --dry-run`
-npm run test:unit     # vitest run — 17 cases, all against src/domain.ts
-npm run deploy        # wrangler deploy (prefer the CI workflow)
+npm run verify        # typecheck + lint + format:check + unit tests + dry-run
+npm run test:unit     # vitest run
+npm run lint          # eslint . --max-warnings 0
+npm run format        # prettier --write .
+npm run deploy        # wrangler deploy (prefer Workers Builds)
 ```
 
-- **It is deployed and live.** `simpletickets-api`, on the Cloudflare account belonging to
-  `simpleticketssupport@gmail.com`, bound to the D1 database `simpletickets`.
-- Secrets (`GMAIL_APP_PASSWORD`, `ADMIN_TOKEN`) are set with `wrangler secret put` and are
-  **preserved across deploys**. Never put them in `wrangler.toml` or a workflow file.
-- `fetch()` is token-gated and returns `404` — not `401` — to an unauthenticated caller,
-  so the worker does not advertise itself. Routes: `GET /status`, `POST /poll`, `GET /diag`.
-- Tests cover `domain.ts` only. `imap.ts`, `store.ts` and `index.ts` have none, so
-  checkpoint recovery and idempotency-under-overlap are argued, not demonstrated.
+The gate matches the prototype's: strict type-aware ESLint, zero warnings, no explicit
+`any`, no non-null assertions, Prettier-enforced formatting (T028).
+
+**Module layout.** Pure logic is kept out of the transport modules deliberately —
+`cloudflare:sockets` cannot be imported outside the Workers runtime, so anything sharing a
+file with it becomes permanently untestable.
+
+| Module | Responsibility | Pure? |
+| --- | --- | --- |
+| `domain.ts` | Sender authorisation, address extraction, HTML to text | Yes |
+| `mime.ts` | RFC 5322 building, header-injection refusal, dot-stuffing, stored-row validation | Yes |
+| `smtp.ts` | SMTP reply parsing, `SmtpError` | Yes |
+| `smtp-transport.ts` | The Gmail SMTP dialogue | No — sockets |
+| `acknowledgement.ts` | R02 acknowledgement composition | Yes |
+| `outbox.ts` | Retry, backoff, permanence, abandonment, ambiguity | Yes |
+| `threading.ts` | Reply → existing ticket, by Message-ID | Yes |
+| `autoreply.ts` | RFC 3834 and legacy auto-reply detection | Yes |
+| `bounce.ts` | Delivery-failure detection and id extraction | Yes |
+| `auth.ts` | Admin token comparison, fails closed | Yes |
+| `imap.ts` | Mailbox reading, body-part selection | No — network |
+| `store.ts` | All D1 access | No — database |
+| `index.ts` | `scheduled()` + token-gated `fetch()`; wires the above | No |
+
+**Things that cost real debugging time, recorded so they are not rediscovered:**
+
+- A **single-part** message has no part identifier. Address `"TEXT"`, or `download()`
+  returns the entire raw message including headers.
+- Fetching a **UID range** stalls under `nodejs_compat`; a single UID does not.
+- `bodyParts` returns raw transfer encoding; `download()` decodes.
+- `References` is **not** in the IMAP envelope and must be requested, and it arrives
+  folded across indented lines — dropping continuations loses half the thread.
+- `Buffer` does not resolve here (`@types/node` is deliberately absent; this runs on
+  workerd), so imapflow's `headers` is error-typed. Validate the shape, do not trust it.
+
+**Correctness properties worth not breaking:**
+
+- `ingest_log.uid` and `outbox.message_id` are both `UNIQUE`. They are what stop one email
+  opening two tickets, and one ticket sending two acknowledgements.
+- The acknowledgement is enqueued in the **same D1 batch** as the ingest log entry. Queue
+  it afterwards and a crash in between leaves a ticket nothing will ever acknowledge.
+- `claimNextIntent` is a compare-and-swap (`WHERE ... AND state = 'pending'`, then check
+  `meta.changes`). D1 has no `SELECT ... FOR UPDATE`; that conditional write is the lock.
+- A send whose outcome is unknown becomes `ambiguous` and waits for a human. Resending
+  risks a duplicate to a real person; dropping it risks silence (PRD open point 4).
+- Bounces are classified **before** auto-replies. A bounce has a null return path, so the
+  auto-reply test matches it too, and misfiling one loses a delivery failure R15 needs.
+
+**Known gaps:** nothing has ever been sent; the `outbox` table is not applied to the remote
+D1 (`migrations/001`); bounce *matching* is unreliable because `readBody` extracts the
+human-readable part of a report rather than the quoted original; `store.ts` and `index.ts`
+have no integration tests; the two-minute cron has never been observed firing.
 
 ### Deploying
 

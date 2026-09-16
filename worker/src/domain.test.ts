@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  extractAddress,
-  isApprovedSender,
-  htmlToText,
-  APPROVED_DOMAIN,
-} from "./domain";
+import { extractAddress, isApprovedSender, htmlToText, APPROVED_DOMAIN } from "./domain";
 
 describe("extractAddress", () => {
   it("takes the address out of a display-name header", () => {

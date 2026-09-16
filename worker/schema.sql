@@ -42,8 +42,43 @@ CREATE INDEX IF NOT EXISTS messages_ticket ON messages (ticket_id);
 -- to IT instead of vanishing silently.
 CREATE TABLE IF NOT EXISTS ingest_log (
   uid        INTEGER PRIMARY KEY,
-  outcome    TEXT NOT NULL CHECK (outcome IN ('ticket', 'rejected_sender', 'error')),
+  outcome    TEXT NOT NULL CHECK (outcome IN
+               ('ticket', 'rejected_sender', 'auto_reply', 'bounce', 'error')),
   ticket_id  INTEGER REFERENCES tickets (id),
   detail     TEXT,
   at         TEXT NOT NULL
 );
+
+-- Durable outgoing mail intents (T013, R28).
+--
+-- message_id is UNIQUE and is the idempotency key: enqueueing the same intent
+-- twice inserts once, so an overlapping or retried run cannot make an employee
+-- receive the same automatic message twice. Same guarantee ingest_log.uid gives
+-- on the way in.
+--
+-- pending_status carries R28: a status change that requires an email takes
+-- effect only when the mail server accepts that message, and the transition is
+-- applied in the same batch as the acceptance record, never before.
+CREATE TABLE IF NOT EXISTS outbox (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id       INTEGER NOT NULL REFERENCES tickets (id),
+  intent          TEXT    NOT NULL CHECK (intent IN
+                    ('acknowledgement', 'reply', 'resolution', 'closure', 'notification')),
+  recipient       TEXT    NOT NULL,
+  message_id      TEXT    NOT NULL,
+  payload         TEXT    NOT NULL,
+  state           TEXT    NOT NULL DEFAULT 'pending' CHECK (state IN
+                    ('pending', 'sending', 'accepted', 'failed', 'ambiguous', 'bounced')),
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT    NOT NULL,
+  sending_since   TEXT,
+  accepted_at     TEXT,
+  smtp_reply      TEXT,
+  last_error      TEXT,
+  pending_status  TEXT,
+  created_at      TEXT    NOT NULL,
+  updated_at      TEXT    NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS outbox_message_id ON outbox (message_id);
+CREATE INDEX IF NOT EXISTS outbox_due ON outbox (state, next_attempt_at);
