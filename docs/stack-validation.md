@@ -158,6 +158,36 @@ libraries already proven against a live server by `tools/mail-check/check.mjs`.
 Not yet proven: long-lived connections and IDLE under the shims. Short poll-and-close
 cycles are what R02 needs, and that is what was tested.
 
+## Gmail App Password authenticates from a Worker, 17 September 2026
+
+A Worker authenticated to `imap.gmail.com:993` with a Google App Password and opened
+INBOX read-only:
+
+```
+authenticated: true   mailbox: INBOX   uidNext: 618314   uidValidity: 660171327
+```
+
+Every link is now proved: Workers reach Gmail, `imapflow` runs under `nodejs_compat`,
+an App Password authenticates without OAuth, and a mailbox can be opened and inspected.
+No VPS, no Workspace seat, no OAuth verification, nothing to pay.
+
+Google displays app passwords in groups of four. The spaces are presentation only and
+must be stripped before use, or authentication fails confusingly.
+
+### Use a dedicated mailbox, not this one
+
+The account used for the proof holds **517,547 messages**. It is a real working inbox,
+which makes it unsuitable as the support mailbox:
+
+- Every newsletter, receipt and notification arriving there would become a ticket.
+- R27 limits ticket creation to post-launch mail. Against half a million existing
+  messages the launch cutoff becomes delicate; against an empty mailbox it is trivial.
+- Personal correspondence would become readable by all five IT staff, which the privacy
+  principle in the constitution does not permit.
+
+Create an empty Gmail account for the support mailbox before building the poller. It is
+a credential swap; nothing proved here changes.
+
 ## Accepted architecture, 17 September 2026
 
 The user chose **Cloudflare Workers for the application and Resend for mail transport**,
