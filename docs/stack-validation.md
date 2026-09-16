@@ -111,6 +111,56 @@ purchased:
 D1, R2, cron scheduling and MIME parsing remain unmeasured; they are not worth measuring
 until the transport question is settled.
 
+## Accepted architecture, 17 September 2026
+
+The user chose **Cloudflare Workers for the application and Resend for mail transport**,
+on the evidence below. This supersedes the IMAP-polling transport in
+`specs/001-email-ticketing/plan.md`. It was chosen because it is the only combination
+proved to work end to end: Workers cannot reach the Zimbra host at all, and no code
+change alters that.
+
+| Concern | Decision | Proved? |
+| --- | --- | --- |
+| Application hosting | Cloudflare Workers | Deploys and serves; CPU measured |
+| Receiving mail | Resend inbound webhook, signature verified | Yes, end to end, first attempt |
+| Message body and headers | Second call to `/emails/receiving/{email_id}` | Endpoint documented, not yet exercised |
+| Sending mail | Resend API | **Not yet proved** |
+| Staff password hashing | Undecided | Blocked: see below |
+
+### Consequences for the specification
+
+These follow from the decision and need applying to the PRD, spec and tasks. They are
+listed rather than applied, because requirement documents are being maintained
+separately.
+
+1. **R01 — the support address changes.** Mail now arrives at
+   `support@tickets.allcheckservices.com`. Either employees use the new address, or the
+   Zimbra administrator forwards `support@allcheckservices.com` to it. The second keeps
+   the published address but reintroduces a dependency on the mail administrator. This is
+   an open product decision.
+2. **R02 — polling becomes delivery on arrival.** "Poll for new mail every two minutes"
+   no longer describes the system. Mail is pushed within seconds of arrival.
+3. **T010 largely dissolves.** Mailbox polling, IMAP leases, UIDVALIDITY reconciliation
+   and the UID-based launch cutoff have no equivalent. They are replaced by: verify the
+   Svix signature, deduplicate on `email_id`, and fetch the body in a second call.
+   The launch-cutoff requirement in R27 becomes trivial, since the subdomain mailbox has
+   no pre-launch history at all.
+4. **Idempotency moves.** Svix retries a delivery until it gets a 2xx, so the same
+   `email_id` can arrive more than once and must create one ticket.
+5. **R12 attachments** arrive as download URLs. The 5 MB aggregate limit is enforced
+   against bytes actually fetched, not a declared size.
+
+### Still unresolved on this stack
+
+- **R06 password hashing.** Workers WebCrypto refuses PBKDF2 above 100,000 iterations,
+  below current guidance of 600,000. Meeting R06 needs WebAssembly Argon2id or bcrypt, or
+  an explicit recorded decision to accept 100,000. Not urgent for mail ingestion, but it
+  blocks the dashboard sign-in work.
+- **Sending has never been tested.** Receiving working says nothing about whether replies
+  leave, arrive, or thread correctly.
+- **Delivery-failure visibility.** `email.bounced` and `email.failed` are not subscribed
+  yet; R15 needs them.
+
 ## Inbound mail proved working over Resend, 17 September 2026
 
 A real message from a company address reached the webhook receiver end to end on the
