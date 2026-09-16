@@ -19,6 +19,9 @@ import {
   threadIds,
   addReply,
   addNote,
+  staffWorkloads,
+  addStaff,
+  setAvailability,
 } from "./store";
 import { buildReply } from "./reply";
 import { isAuthorised } from "./auth";
@@ -57,6 +60,39 @@ export default {
     // secret, so the API cannot tell one staff member from another and nothing
     // here may be treated as an audit trail of who did what. Real per-staff
     // sign-in is R06, still blocked on the Workers PBKDF2 cap.
+
+    if (url.pathname === "/api/staff") {
+      if (request.method === "GET") {
+        return Response.json({ staff: await staffWorkloads(env.DB) });
+      }
+      if (request.method === "POST") {
+        const raw: unknown = await request.json().catch(() => null);
+        const payload: Record<string, unknown> =
+          typeof raw === "object" && raw !== null && !Array.isArray(raw)
+            ? (raw as Record<string, unknown>)
+            : {};
+        const name = payload["name"];
+        if (typeof name !== "string" || name.trim().length === 0) {
+          return Response.json({ error: "A name is required" }, { status: 400 });
+        }
+        const email = typeof payload["email"] === "string" ? payload["email"] : null;
+
+        // Availability is admin-controlled and distinct from account access:
+        // marking someone unavailable stops new work reaching them without
+        // revoking anything (R24).
+        if ("available" in payload) {
+          const changed = await setAvailability(env.DB, name, payload["available"] === true);
+          if (!changed) {
+            return Response.json({ error: "No such staff member" }, { status: 404 });
+          }
+          return Response.json({ updated: name, available: payload["available"] === true });
+        }
+
+        await addStaff(env.DB, name, email);
+        return Response.json({ added: name });
+      }
+      return Response.json({ error: "Method not allowed" }, { status: 405 });
+    }
 
     if (url.pathname === "/api/tickets" && request.method === "GET") {
       return Response.json({ tickets: await listTickets(env.DB) });

@@ -40,6 +40,8 @@ export async function alreadyIngested(db: D1Database, uid: number): Promise<bool
 }
 
 export interface NewTicket {
+  /** Chosen assignee, or null when nobody is available (R07). */
+  owner: string | null;
   /** ISO timestamp for the first-response deadline (R03). */
   responseDue: string;
   uid: number;
@@ -64,10 +66,10 @@ export async function createTicket(
   const now = new Date().toISOString();
   const ticket = await db
     .prepare(
-      `INSERT INTO tickets (subject, requester, status, priority, response_due, created_at, updated_at)
-       VALUES (?, ?, 'New', 'Normal', ?, ?, ?) RETURNING id`,
+      `INSERT INTO tickets (subject, requester, status, priority, owner, response_due, created_at, updated_at)
+       VALUES (?, ?, 'New', 'Normal', ?, ?, ?, ?) RETURNING id`,
     )
-    .bind(input.subject, input.requester, input.responseDue, now, now)
+    .bind(input.subject, input.requester, input.owner, input.responseDue, now, now)
     .first<{ id: number }>();
   if (ticket === null) throw new Error("Ticket insert returned no id.");
 
@@ -600,4 +602,61 @@ export async function addNote(
       .bind(ticketId, author, body, now),
     db.prepare(`UPDATE tickets SET updated_at = ? WHERE id = ?`).bind(now, ticketId),
   ]);
+}
+
+/* ----------------------------------------------------------------- staff */
+
+export interface StaffRow {
+  name: string;
+  email: string | null;
+  available: number;
+  openTickets: number;
+}
+
+/**
+ * Staff with their current open-ticket counts.
+ *
+ * "Open" is New, In Progress and Waiting for Employee. Resolved and Closed are
+ * excluded: counting finished work would permanently penalise whoever has been
+ * here longest and starve them of new tickets.
+ */
+export async function staffWorkloads(db: D1Database): Promise<StaffRow[]> {
+  const rows = await db
+    .prepare(
+      `SELECT s.name, s.email, s.available,
+              (SELECT COUNT(*) FROM tickets t
+                WHERE t.owner = s.name
+                  AND t.status IN ('New', 'In Progress', 'Waiting for Employee')
+              ) AS openTickets
+         FROM staff s ORDER BY s.name`,
+    )
+    .all<StaffRow>();
+  return rows.results;
+}
+
+/** Who received the most recent assignment, for round-robin rotation. */
+export async function lastAssignee(db: D1Database): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT owner FROM tickets WHERE owner IS NOT NULL ORDER BY id DESC LIMIT 1`)
+    .first<{ owner: string }>();
+  return row?.owner ?? null;
+}
+
+export async function addStaff(db: D1Database, name: string, email: string | null): Promise<void> {
+  await db
+    .prepare(`INSERT OR IGNORE INTO staff (name, email, available, created_at) VALUES (?, ?, 1, ?)`)
+    .bind(name, email, new Date().toISOString())
+    .run();
+}
+
+export async function setAvailability(
+  db: D1Database,
+  name: string,
+  available: boolean,
+): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE staff SET available = ? WHERE name = ?`)
+    .bind(available ? 1 : 0, name)
+    .run();
+  return result.meta.changes > 0;
 }

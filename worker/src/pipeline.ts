@@ -21,6 +21,7 @@ import { readNewMail, readMailboxMarkers } from "./imap";
 // deadline rules would drift, and the UI would eventually show a different
 // deadline from the one the system enforces.
 import { responseDeadline } from "../../prototype/src/domain/business-calendar";
+import { chooseAssignee } from "./assignment";
 import { isApprovedSender, extractAddress } from "./domain";
 import {
   readCheckpoint,
@@ -28,6 +29,8 @@ import {
   alreadyIngested,
   createTicket,
   recordSkip,
+  staffWorkloads,
+  lastAssignee,
   findTicketByMessageIds,
   appendReply,
   recordBounce,
@@ -211,6 +214,17 @@ export async function ingest(env: Env): Promise<RunSummary> {
         // Sunday arrival due Monday noon. Anchored to when WE received it, not
         // to the Date header, which the sender controls.
         responseDue: responseDeadline(new Date()).toISOString(),
+        // R07: fewest open tickets, round robin for ties. null when nobody is
+        // available - the ticket stays visibly unassigned rather than being
+        // handed to someone who cannot work it.
+        owner: chooseAssignee(
+          (await staffWorkloads(env.DB)).map((member) => ({
+            name: member.name,
+            openTickets: member.openTickets,
+            available: member.available === 1,
+          })),
+          await lastAssignee(env.DB),
+        ),
       },
       // R02: the acknowledgement is queued, never sent inline. Sending here
       // would put an SMTP round trip inside the ingestion loop, where a slow

@@ -87,3 +87,14 @@ CREATE TABLE IF NOT EXISTS outbox (
 
 CREATE UNIQUE INDEX IF NOT EXISTS outbox_message_id ON outbox (message_id);
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox (state, next_attempt_at);
+
+-- IT staff and availability (R07, R24). Seeded with nobody on purpose: see
+-- migrations/003_staff.sql.
+CREATE TABLE IF NOT EXISTS staff (
+  name       TEXT PRIMARY KEY,
+  email      TEXT,
+  available  INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0, 1)),
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS tickets_owner ON tickets (owner, status);
