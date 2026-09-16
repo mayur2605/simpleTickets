@@ -7,7 +7,7 @@ Edit the last line to name who should reply and by when, then send.
 
 ---
 
-**Subject:** IMAP/SMTP to mail.allcheckservices.com times out from outside our network
+**Subject:** Two mail server issues blocking our internal ticketing system
 
 Hello,
 
@@ -37,7 +37,7 @@ The connections **time out rather than being refused**. A closed port normally r
 immediately. A timeout means the packets are being dropped, which usually indicates a
 firewall rule rather than a service that is down or a port that is closed.
 
-**Our questions:**
+**Our questions on this first issue:**
 
 1. Is there a firewall or security policy on `mail.allcheckservices.com` that restricts
    IMAP and SMTP to specific IP addresses or ranges, or that blocks connections from
@@ -46,6 +46,42 @@ firewall rule rather than a service that is down or a port that is closed.
    to you in advance?
 3. If it cannot be relaxed, is there a supported way for an internal application to
    reach the mailbox from outside the office?
+
+---
+
+**Second issue: our server rejects legitimate mail on an aggressive blocklist**
+
+Separately, mail sent to `@allcheckservices.com` from our ticketing system is being
+rejected by our own mail server. The SMTP response was:
+
+```
+550 The sender 23.251.234.51 is in a black list hostkarma.junkemailfilter.com
+    https://cloudmail.go4hosting.in/info#hostkarma.junkemailfilter.com
+```
+
+We checked that IP against the major blocklists ourselves:
+
+| Blocklist | Result |
+| --- | --- |
+| HostKarma (`hostkarma.junkemailfilter.com`) | Listed |
+| Spamhaus ZEN | **Not listed** |
+| SpamCop | **Not listed** |
+
+The address is clean on both major reputable blocklists and listed only on HostKarma,
+which is a small list with a reputation for false positives. Many mail operators use it
+as one scoring input rather than as a hard rejection rule.
+
+**Our questions on this second issue:**
+
+4. Is HostKarma currently configured to reject mail outright? If so, would you consider
+   using it as a spam score contribution rather than an outright block, given it is
+   rejecting mail that Spamhaus and SpamCop both consider clean?
+5. Failing that, can you allowlist our sending domain `tickets.allcheckservices.com`, so
+   that mail from our own ticketing system reaches staff?
+
+This matters because every notification the ticketing system sends — ticket
+acknowledgements, replies and resolution notices — goes to `@allcheckservices.com`
+addresses. If they are rejected, the system cannot work at all.
 
 **What we are not asking for:**
 
