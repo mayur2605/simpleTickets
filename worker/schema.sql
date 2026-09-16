@@ -91,10 +91,37 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox (state, next_attempt_at);
 -- IT staff and availability (R07, R24). Seeded with nobody on purpose: see
 -- migrations/003_staff.sql.
 CREATE TABLE IF NOT EXISTS staff (
-  name       TEXT PRIMARY KEY,
-  email      TEXT,
-  available  INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0, 1)),
-  created_at TEXT NOT NULL
+  name          TEXT PRIMARY KEY,
+  email         TEXT,
+  available     INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0, 1)),
+  -- Admin-provisioned (R06); no self-registration. NULL means the account
+  -- exists but cannot sign in yet.
+  password_hash TEXT,
+  is_admin      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL
 );
+
+-- Session tokens are stored hashed: reading this table must not yield anything
+-- usable to log in with.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  staff_name TEXT NOT NULL REFERENCES staff (name),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS sessions_staff ON sessions (staff_name);
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires_at);
+
+-- Failed sign-ins, for throttling. Per account, not per IP: Workers sees edge
+-- addresses and an attacker can rotate sources, but cannot avoid naming the
+-- account being guessed.
+CREATE TABLE IF NOT EXISTS login_failures (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  staff_name TEXT NOT NULL,
+  at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS login_failures_lookup ON login_failures (staff_name, at);
 
 CREATE INDEX IF NOT EXISTS tickets_owner ON tickets (owner, status);

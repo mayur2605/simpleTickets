@@ -22,9 +22,146 @@ import { buildReply } from "./reply";
 import { transitionRule, STATUSES, type Status } from "./transitions";
 import { responseState } from "./overdue";
 import { hashPassword, verifyPassword, TOTAL_ITERATIONS, ROUNDS } from "./password";
+import {
+  readSessionToken,
+  hashToken,
+  newToken,
+  sessionCookie,
+  clearedCookie,
+  expiryFrom,
+  isExpired,
+} from "./session";
+import {
+  findStaff,
+  setPasswordHash,
+  createSession,
+  findSession,
+  deleteSession,
+  recordLoginFailure,
+  recentFailures,
+} from "./store";
 import type { Env } from "./pipeline";
 
+/** Failed sign-ins tolerated per account before it is locked out briefly. */
+const MAX_FAILURES = 5;
+const LOCKOUT_MINUTES = 15;
+
+interface Identity {
+  name: string;
+  isAdmin: boolean;
+}
+
+/**
+ * Who is making this request, according to the SESSION - never according to
+ * anything the client says about itself.
+ *
+ * Returns null when there is no valid session. The shared admin token grants
+ * operational access but deliberately does NOT produce an identity: a token
+ * cannot author a message, because then anyone holding it could write history
+ * under any staff member's name.
+ */
+async function identify(request: Request, env: Env): Promise<Identity | null> {
+  const token = readSessionToken(request);
+  if (token === null) return null;
+  const session = await findSession(env.DB, await hashToken(token));
+  if (session === null) return null;
+  if (isExpired(session.expires_at, new Date())) {
+    // Expired sessions are removed on sight rather than left to accumulate.
+    await deleteSession(env.DB, await hashToken(token));
+    return null;
+  }
+  return { name: session.staff_name, isAdmin: session.is_admin === 1 };
+}
+
 export async function handleApi(url: URL, request: Request, env: Env): Promise<Response> {
+  const identity = await identify(request, env);
+
+  if (url.pathname === "/api/login" && request.method === "POST") {
+    const raw: unknown = await request.json().catch(() => null);
+    const body: Record<string, unknown> =
+      typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {};
+    const name = body["name"];
+    const password = body["password"];
+    if (typeof name !== "string" || typeof password !== "string") {
+      return Response.json({ error: "name and password are required" }, { status: 400 });
+    }
+
+    const since = new Date(Date.now() - LOCKOUT_MINUTES * 60_000).toISOString();
+    if ((await recentFailures(env.DB, name, since)) >= MAX_FAILURES) {
+      // Throttled before the password is even checked, so a locked account
+      // costs an attacker a request and tells them nothing.
+      return Response.json(
+        { error: `Too many attempts. Try again in ${String(LOCKOUT_MINUTES)} minutes.` },
+        { status: 429 },
+      );
+    }
+
+    const account = await findStaff(env.DB, name);
+    // One message for every failure. Saying "no such user" would confirm which
+    // accounts exist, and a different message for "no password set" would say
+    // which are worth attacking.
+    const rejected = Response.json({ error: "Incorrect name or password" }, { status: 401 });
+
+    if (account === null || account.password_hash === null) {
+      await recordLoginFailure(env.DB, name);
+      return rejected;
+    }
+    if (!(await verifyPassword(password, account.password_hash))) {
+      await recordLoginFailure(env.DB, name);
+      return rejected;
+    }
+
+    const token = newToken();
+    await createSession(env.DB, await hashToken(token), account.name, expiryFrom(new Date()));
+    return new Response(JSON.stringify({ name: account.name, isAdmin: account.is_admin === 1 }), {
+      status: 200,
+      headers: { "content-type": "application/json", "Set-Cookie": sessionCookie(token) },
+    });
+  }
+
+  if (url.pathname === "/api/logout" && request.method === "POST") {
+    const token = readSessionToken(request);
+    if (token !== null) await deleteSession(env.DB, await hashToken(token));
+    return new Response(JSON.stringify({ signedOut: true }), {
+      status: 200,
+      headers: { "content-type": "application/json", "Set-Cookie": clearedCookie() },
+    });
+  }
+
+  if (url.pathname === "/api/me") {
+    return identity === null
+      ? Response.json({ signedIn: false }, { status: 401 })
+      : Response.json({ signedIn: true, ...identity });
+  }
+
+  // Admin-provisioned passwords (R06): no self-registration, and only an admin
+  // may set one. Without a session this is refused outright - the shared token
+  // must not be able to hand out credentials.
+  if (url.pathname === "/api/staff/password" && request.method === "POST") {
+    if (identity === null || !identity.isAdmin) {
+      return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+    }
+    const raw: unknown = await request.json().catch(() => null);
+    const body: Record<string, unknown> =
+      typeof raw === "object" && raw !== null && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {};
+    const name = body["name"];
+    const password = body["password"];
+    if (typeof name !== "string" || typeof password !== "string" || password.length < 12) {
+      return Response.json(
+        { error: "name and a password of at least 12 characters are required" },
+        { status: 400 },
+      );
+    }
+    const changed = await setPasswordHash(env.DB, name, await hashPassword(password));
+    return changed
+      ? Response.json({ updated: name })
+      : Response.json({ error: "No such staff member" }, { status: 404 });
+  }
+
   // ---- dashboard API ----------------------------------------------------
   // Everything here is behind the same single admin token as the operational
   // routes. That is NOT multi-user authentication: there is one shared

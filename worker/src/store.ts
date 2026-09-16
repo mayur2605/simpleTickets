@@ -692,3 +692,92 @@ export async function setStatus(db: D1Database, id: number, status: string): Pro
     .bind(status, now, id)
     .run();
 }
+
+/* ------------------------------------------------------------------ auth */
+
+export interface StaffAccount {
+  name: string;
+  password_hash: string | null;
+  is_admin: number;
+  available: number;
+}
+
+export async function findStaff(db: D1Database, name: string): Promise<StaffAccount | null> {
+  return db
+    .prepare(`SELECT name, password_hash, is_admin, available FROM staff WHERE name = ?`)
+    .bind(name)
+    .first<StaffAccount>();
+}
+
+export async function setPasswordHash(
+  db: D1Database,
+  name: string,
+  hash: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(`UPDATE staff SET password_hash = ? WHERE name = ?`)
+    .bind(hash, name)
+    .run();
+  return result.meta.changes > 0;
+}
+
+/**
+ * Start a session and, in the same batch, clear this account's failure count
+ * and sweep expired rows. A successful sign-in should not leave an old failure
+ * streak that locks the account out a minute later.
+ */
+export async function createSession(
+  db: D1Database,
+  tokenHash: string,
+  staffName: string,
+  expiresAt: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO sessions (token_hash, staff_name, created_at, expires_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .bind(tokenHash, staffName, now, expiresAt),
+    db.prepare(`DELETE FROM login_failures WHERE staff_name = ?`).bind(staffName),
+    db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).bind(now),
+  ]);
+}
+
+export interface SessionRow {
+  staff_name: string;
+  expires_at: string;
+  is_admin: number;
+}
+
+export async function findSession(db: D1Database, tokenHash: string): Promise<SessionRow | null> {
+  return db
+    .prepare(
+      `SELECT s.staff_name, s.expires_at, st.is_admin
+         FROM sessions s JOIN staff st ON st.name = s.staff_name
+        WHERE s.token_hash = ?`,
+    )
+    .bind(tokenHash)
+    .first<SessionRow>();
+}
+
+export async function deleteSession(db: D1Database, tokenHash: string): Promise<void> {
+  await db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).bind(tokenHash).run();
+}
+
+export async function recordLoginFailure(db: D1Database, name: string): Promise<void> {
+  await db
+    .prepare(`INSERT INTO login_failures (staff_name, at) VALUES (?, ?)`)
+    .bind(name, new Date().toISOString())
+    .run();
+}
+
+/** Failed attempts for this account since `since`. */
+export async function recentFailures(db: D1Database, name: string, since: string): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS failures FROM login_failures WHERE staff_name = ? AND at > ?`)
+    .bind(name, since)
+    .first<{ failures: number }>();
+  return row?.failures ?? 0;
+}
