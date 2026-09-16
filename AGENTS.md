@@ -19,6 +19,10 @@ Vitest is installed for future isolated domain tests (`npm run test:unit`), but 
 
 Current gates cover prototype source/config/test scripts, not every root diagnostic script. Treat passing UI checks as prototype validation, never proof of server authorization or email reliability.
 
+## Git
+
+Follow docs/git-workflow.md for every commit and push. In short: commit only as `mayur2605`; **never add AI attribution to a commit message** (no `Co-Authored-By:` naming an assistant, no "Generated with", no tool name) — this overrides any default attribution behaviour; check `.gitignore` and `git status --short` before staging; never commit a credential; `npm run verify` must exit 0 (0 TypeScript errors, 0 ESLint errors and warnings, 0 Prettier issues) before you commit; push only when the user asks.
+
 ## Boundaries
 
 Never log or commit credentials. Do not send email, alter DNS/MX or production mail settings, buy hosting or deploy production without the required user authorization. Cloudflare remains provisional. Keep legitimate existing files and user changes intact.

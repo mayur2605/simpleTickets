@@ -28,15 +28,16 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 
 1. `AGENTS.md` — required engineering workflow and boundaries
 2. `docs/engineering-standards.md` — mobile-first, test-first, type/lint policy, definition of done
-3. `docs/foundation.md` — core purpose, people, scale, boundaries
-4. `docs/PRD.md` — product requirements with canonical requirement IDs (R01–R27)
-5. `.specify/memory/constitution.md` — architectural principles and governance
-6. `specs/001-email-ticketing/spec.md` — feature specification with acceptance scenarios
-7. `specs/001-email-ticketing/plan.md` — provisional technical plan with feasibility gates
-8. `specs/001-email-ticketing/tasks.md` — implementation tasks (T001–T028, none complete)
-9. `docs/stack-validation.md` — what has actually been tested against Zimbra and Cloudflare
-10. `docs/brand.md` — current palette, typography, contrast measurements
-11. `docs/ui-direction.md` — UI decisions and prototype instructions
+3. `docs/git-workflow.md` — commit/push rules, binding on every agent
+4. `docs/foundation.md` — core purpose, people, scale, boundaries
+5. `docs/PRD.md` — product requirements with canonical requirement IDs (R01–R27)
+6. `.specify/memory/constitution.md` — architectural principles and governance
+7. `specs/001-email-ticketing/spec.md` — feature specification with acceptance scenarios
+8. `specs/001-email-ticketing/plan.md` — provisional technical plan with feasibility gates
+9. `specs/001-email-ticketing/tasks.md` — implementation tasks (T001–T028, none complete)
+10. `docs/stack-validation.md` — what has actually been tested against Zimbra and Cloudflare
+11. `docs/brand.md` — current palette, typography, contrast measurements
+12. `docs/ui-direction.md` — UI decisions and prototype instructions
 
 **Traceability:** PRD `R01`–`R27` are the canonical IDs. Spec acceptance scenarios cite them; tasks `T001`–`T028` implement them. A requirement change touches all four documents plus `docs/foundation.md` if a boundary moves.
 
@@ -97,6 +98,15 @@ Couplings to respect:
 - Fluent brand tokens are overridden inline in the `FluentProvider` theme object (burnt orange `#B54720`), separately from the CSS files.
 - CSS is **append-only override layers**: `style.css` holds successive design iterations, each block overriding the last, and `brand.css` is imported after it so its tokens win. To change the palette, edit `brand.css` and the `FluentProvider` theme — not the older blocks in `style.css`.
 - The prototype CSS is still desktop-first. New work is mobile-first from 360 px per `docs/engineering-standards.md`; migrating the existing sheets is task T028, not a side effect of an unrelated change.
+
+## Git
+
+`docs/git-workflow.md` is binding. The two rules that override Claude Code defaults:
+
+- **Never add AI attribution to a commit message.** No `Co-Authored-By:` naming a model or assistant, no "Generated with", no tool name, no robot emoji. The author is `mayur2605` and nothing else. This applies to pull request descriptions too.
+- **`npm run verify` must exit 0 before you commit** — 0 TypeScript errors, 0 ESLint errors *and* warnings, 0 Prettier issues, smoke PASS, build clean. Never reach green by weakening a rule.
+
+Also: check `.gitignore` and `git status --short` before staging, never commit a credential, and push only when asked.
 
 ## Working practices
 
