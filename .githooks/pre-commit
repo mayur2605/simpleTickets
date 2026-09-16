@@ -1,0 +1,42 @@
+#!/bin/sh
+# Fast pre-commit checks. See docs/git-workflow.md.
+#
+# Deliberately NOT the full gate: `npm run verify` takes ~40s, and a hook that
+# slow teaches people to reach for --no-verify. Run verify yourself before
+# committing. This hook only catches the things that are expensive to undo:
+# committed secrets and unformatted files.
+#
+# Bypassing with --no-verify is itself a rule violation.
+
+fail() { printf '\npre-commit: %s\n\n' "$1" >&2; exit 1; }
+
+files=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$files" ] && exit 0
+
+# 1. Files that must never be tracked, regardless of .gitignore state.
+if printf '%s\n' "$files" | grep -qE '(^|/)\.env($|\.)'; then
+  fail "a .env file is staged. Unstage it: git restore --staged <file>"
+fi
+if printf '%s\n' "$files" | grep -qE '(^|/)(node_modules|dist)/'; then
+  fail "dependency or build output is staged. Check .gitignore."
+fi
+
+# 2. Credentials in the staged changes (added lines only).
+added=$(git diff --cached --diff-filter=ACM -U0 | grep '^+' | grep -v '^+++')
+if printf '%s\n' "$added" | grep -qE 'BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}'; then
+  fail "a credential appears in the staged changes. If it is real, rotate it first, then unstage."
+fi
+if printf '%s\n' "$added" | grep -qiE '(password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)[[:space:]]*[=:][[:space:]]*["'"'"'][^"'"'"']{8,}["'"'"']'; then
+  fail "a hardcoded credential assignment appears in the staged changes. Move it to a secret store or an interactive prompt."
+fi
+
+# 3. Formatting, for staged files inside the prototype package.
+proto=$(printf '%s\n' "$files" | sed -n 's|^prototype/||p')
+if [ -n "$proto" ] && [ -x prototype/node_modules/.bin/prettier ]; then
+  if ! printf '%s\n' "$proto" | tr '\n' '\0' \
+    | (cd prototype && xargs -0 ./node_modules/.bin/prettier --check --ignore-unknown); then
+    fail "staged files are not formatted. Run: cd prototype && npm run format"
+  fi
+fi
+
+exit 0

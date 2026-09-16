@@ -108,6 +108,8 @@ Couplings to respect:
 
 Also: check `.gitignore` and `git status --short` before staging, never commit a credential, and push only when asked.
 
+Hooks in `.githooks/` enforce part of this automatically — enable them once per clone with `git config core.hooksPath .githooks`. They are a safety net, not the gate: `npm run verify` is still yours to run. Never use `--no-verify`.
+
 ## Working practices
 
 **Documentation first:** Record user decisions in PRD and specs. Label proposed defaults clearly; distinguish user approval from draft technical choices.

@@ -2,6 +2,12 @@
 
 Binding on every contributor and every coding agent working in this repository (Claude Code, Codex, any other). These rules are not style preferences — a commit that breaks one of them is a defect.
 
+**One-time setup in every clone** (hooks live in `.githooks/`, and Git does not enable them automatically):
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## 1. Identity and authorship
 
 - Commit and push **only as `mayur2605`**. The identity is set local to this repository; do not change it, and do not fall back to a global or guessed identity.
@@ -76,3 +82,19 @@ This project has been worked by more than one coding agent at the same time. Tha
 - `.gitignore` covers `node_modules/`, `dist/`, `.env*`, `playwright-report/`, `test-results/` and `prototype/*-preview.png` (smoke-test screenshots, rewritten by every `npm test` run).
 - Lockfiles **are** committed — `prototype/package-lock.json` and `tools/mail-check/package-lock.json`. Install with `npm ci`, never `npm install --force` or `--legacy-peer-deps`.
 - `.remember/` ignores itself.
+
+## 8. Hooks
+
+`.githooks/` is tracked, so every clone and every agent gets the same checks once `core.hooksPath` is set (see the setup command at the top).
+
+**`pre-commit`** blocks a commit when staged changes contain:
+- a `.env` file, or anything under `node_modules/` or `dist/`
+- a private key block, AWS access key, GitHub token or Slack token
+- a hardcoded credential assignment such as `password = "..."` with a non-trivial literal
+- a file inside `prototype/` that Prettier would reformat
+
+**`commit-msg`** blocks a commit message containing AI attribution — a `Co-Authored-By:` line naming a model or assistant, a "Generated with" line, or a robot emoji.
+
+These hooks are a safety net for the expensive-to-undo mistakes, **not** the gate. They deliberately do not run `npm run verify`: at roughly 40 seconds it would push people toward `--no-verify`, which disables every check at once. Run `npm run verify` yourself before committing, as §2 requires.
+
+`--no-verify` skips both hooks. Using it is a rule violation, not a shortcut.

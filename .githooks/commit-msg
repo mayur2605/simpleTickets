@@ -1,0 +1,10 @@
+#!/bin/sh
+# Reject AI attribution in commit messages. See docs/git-workflow.md section 1.
+# The author of every commit here is the person, not the tool that helped.
+
+if grep -qiE '^[[:space:]]*co-authored-by:.*(claude|anthropic|openai|codex|gpt|copilot|gemini|assistant|noreply@anthropic)' "$1" \
+  || grep -qiE 'generated with|co-?authored by (claude|codex|copilot)|🤖' "$1"; then
+  printf '\ncommit-msg: remove the AI attribution line from this commit message.\n            See docs/git-workflow.md section 1.\n\n' >&2
+  exit 1
+fi
+exit 0
