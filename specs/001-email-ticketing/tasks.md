@@ -17,7 +17,8 @@ Status: production implementation tasks remain open. A local prototype privacy r
 - [ ] T006 Scaffold selected application, local configuration, secret handling, migrations and development instructions.
 - [ ] T007 Model accounts, tickets, messages, attachments, audit events, inbox deduplication, outbox, deadlines and sessions; add integrity constraints.
 - [ ] T008 Implement admin-provisioned accounts, password plus email-code sign-in, authorization and recovery; test expiry, reuse, brute-force limits and disabled accounts.
-- [ ] T009 Implement shared business calendar and deadline calculation; test all spec boundary examples and Sunday new-ticket/reply behavior and preservation of earlier pending deadlines.
+- [x] T009 Implement shared business calendar and deadline calculation; test all spec boundary examples and Sunday new-ticket/reply behavior and preservation of earlier pending deadlines.
+  Done: `prototype/src/domain/business-calendar.ts`, 19 passing Vitest cases covering the four spec examples, the working-window boundaries at 09:00/18:00, Saturday-to-Monday carry, and the no-postponement rule. Domain rule only — no ticket store consumes it yet; wiring belongs to T007/T016.
 
 ## Phase 2 — Employee email flow
 

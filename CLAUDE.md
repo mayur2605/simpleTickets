@@ -12,10 +12,11 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 
 **Current state:**
 - `prototype/`: React 19 + TypeScript + Vite frontend with Fluent UI React v9 components
+- `prototype/src/domain/`: production domain rules, free of React, storage and transport — start here for business logic, not in `main.tsx`
 - Single-file prototype (`src/main.tsx`) with in-memory state for UI review
 - `scripts/check-mail-tls.mjs`: unauthenticated Zimbra TLS probe
 - `tools/mail-check/`: interactive IMAP/SMTP authentication check, run by hand, its own package
-- `.github/workflows/prototype-quality.yml`: runs `npm run verify` on push/PR (not yet verified remotely)
+- `.github/workflows/prototype-quality.yml`: runs `npm run verify` on push/PR — first remote run green 16 Sep 2026
 - No backend, authentication, database, or email integration yet
 
 **Planned production stack (provisional):**
@@ -63,17 +64,17 @@ All frontend work happens in `prototype/`:
 ```bash
 npm ci                    # Install dependencies
 npm run dev               # Preview server on http://127.0.0.1:5173
-npm run verify            # The gate: typecheck + lint + format:check + test + build
+npm run verify            # The gate: typecheck + lint + format + unit + smoke + build
 npm run typecheck         # tsc --noEmit
 npm run lint              # eslint . --max-warnings 0
 npm run format            # prettier --write .
 npm run format:check      # prettier --check .
 npm test                  # Browser smoke test (see below)
-npm run test:unit         # vitest run — exits 1 today, no domain tests exist yet
+npm run test:unit         # vitest run — domain suites under src/domain/
 npm run build             # tsc + vite build
 ```
 
-`npm run test:unit` is deliberately **not** in `verify`: Vitest exits non-zero with no test files. Add it to `verify` and to the CI workflow with the first production domain module.
+`npm run test:unit` is part of `verify`, ahead of the slow browser test so a domain failure surfaces in seconds. CI inherits it by running `verify`. Vitest exits non-zero when it finds no test files, so never leave `src/domain/` without a suite.
 
 Prettier owns formatting for everything except `node_modules`, `dist` and `package-lock.json`. Run `npm run format` after editing — an unformatted file fails the gate at `format:check`, before the tests ever run.
 
@@ -137,5 +138,4 @@ Hooks in `.githooks/` enforce part of this automatically — enable them once pe
 - Mail delivery round trip never performed; only TLS handshakes and a user-reported local auth check
 - Backup storage provider and restore procedures not finalized
 - Production hosting choice pending feasibility tests
-- CI workflow has never run remotely
 - ESLint pinned at 9 (jsx-a11y peer ceiling) though npm marks 9 out of support; TypeScript pinned to 6.0.2 for typed-ESLint compatibility

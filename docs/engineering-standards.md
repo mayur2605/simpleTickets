@@ -28,9 +28,9 @@ Server authorization for every sensitive action and attachment. Password hashing
 
 ## 6. Reproducible quality gate
 
-Use npm and committed package-lock files. Use npm ci in CI. Do not bypass peer-dependency checks. Prototype commands: typecheck, lint, format:check, test and build, combined as npm run verify. Add unit/integration checks to that gate as corresponding production modules appear. Keep tests deterministic and isolated from the running user preview.
+Use npm and committed package-lock files. Use npm ci in CI. Do not bypass peer-dependency checks. Prototype commands: typecheck, lint, format:check, test:unit, test and build, combined as npm run verify. The domain unit suite joined that gate with the first domain module (business calendar). Add integration checks as persistence and transport modules appear. Keep tests deterministic and isolated from the running user preview.
 
-A CI workflow is provided for the prototype. CI success is not claimed until it runs remotely. Tooling has a compatibility constraint: current JSX accessibility plugin supports ESLint through v9, while npm marks v9 out of support. Track upgrade/replacement before production rather than forcing unsupported peer versions. TypeScript was pinned to 6.0.2 because the installed typed ESLint supports versions below 6.1; the original TypeScript 7 dependency was incompatible.
+A CI workflow is provided for the prototype. It first ran remotely on 16 September 2026 and passed every step, including npm ci, Playwright Chromium install and npm run verify. Tooling has a compatibility constraint: current JSX accessibility plugin supports ESLint through v9, while npm marks v9 out of support. Track upgrade/replacement before production rather than forcing unsupported peer versions. TypeScript was pinned to 6.0.2 because the installed typed ESLint supports versions below 6.1; the original TypeScript 7 dependency was incompatible.
 
 ## 7. Definition of done
 

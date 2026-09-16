@@ -15,7 +15,7 @@ Read docs/engineering-standards.md, docs/PRD.md, docs/brand.md and the feature s
 
 From prototype/: `npm ci`, then `npm run verify`. Browser tests start their own Vite server on 5174; local Google Chrome is required. CI uses Playwright Chromium. Do not use real credentials or real email in tests.
 
-Vitest is installed for future isolated domain tests (`npm run test:unit`), but no domain tests exist yet. Add this command to the mandatory verify/CI chain as soon as the first production domain module is added; it intentionally fails when no tests exist. Extend tooling to each new backend package before marking it ready.
+Vitest runs the domain suites (`npm run test:unit`) and is part of `npm run verify`, so CI enforces it too. Domain rules live in `prototype/src/domain/` and must stay free of React, storage and transport. Extend tooling to each new backend package before marking it ready.
 
 Current gates cover prototype source/config/test scripts, not every root diagnostic script. Treat passing UI checks as prototype validation, never proof of server authorization or email reliability.
 
