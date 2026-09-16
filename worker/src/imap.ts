@@ -4,7 +4,7 @@
  */
 import { ImapFlow } from "imapflow";
 import type { MessageStructureObject } from "imapflow";
-import { htmlToText } from "./domain";
+import { htmlToText, isApprovedSender } from "./domain";
 
 export interface FetchedMessage {
   uid: number;
@@ -332,6 +332,65 @@ export async function listFolders(
       await client.logout();
     } catch {
       client.close();
+    }
+  }
+}
+
+export interface PeekedMessage {
+  uid: number;
+  from: string;
+  subject: string;
+  date: string | null;
+  /** True when this message would be accepted as an employee request. */
+  approvedSender: boolean;
+}
+
+/**
+ * Read-only look at the newest messages: envelopes only, no bodies, no
+ * ingestion, no outgoing mail.
+ *
+ * Exists so the mailbox can be inspected without `/poll`, which now creates
+ * tickets AND sends acknowledgements to real people. Checking what arrived
+ * should never be able to mail somebody.
+ */
+export async function peekRecent(
+  user: string,
+  appPassword: string,
+  count = 10,
+): Promise<{ uidNext: number; messages: PeekedMessage[] }> {
+  const client = makeClient(user, appPassword);
+  await client.connect();
+  try {
+    const box = await client.mailboxOpen("INBOX", { readOnly: true });
+    const from = Math.max(1, box.uidNext - count);
+    const fetched = await client.fetchAll(
+      { uid: `${String(from)}:*` },
+      { uid: true, envelope: true },
+      { uid: true },
+    );
+    const messages = fetched.map((message) => {
+      const sender = message.envelope?.from?.[0];
+      const address = sender?.address ?? "";
+      const display =
+        sender?.name === undefined || sender.name === "" ? address : `${sender.name} <${address}>`;
+      return {
+        uid: message.uid,
+        from: display,
+        subject: message.envelope?.subject ?? "(no subject)",
+        // imapflow types this as string | Date depending on the server's reply.
+        date:
+          message.envelope?.date instanceof Date
+            ? message.envelope.date.toISOString()
+            : (message.envelope?.date ?? null),
+        approvedSender: isApprovedSender(display),
+      };
+    });
+    return { uidNext: box.uidNext, messages };
+  } finally {
+    try {
+      await client.logout();
+    } catch {
+      // already closed
     }
   }
 }

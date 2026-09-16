@@ -15,7 +15,7 @@
  *   mailbox's current uidNext and nothing is imported, so pre-existing mail
  *   never becomes a ticket.
  */
-import { readNewMail, readMailboxMarkers } from "./imap";
+import { readNewMail, readMailboxMarkers, peekRecent } from "./imap";
 import { isApprovedSender, extractAddress } from "./domain";
 import {
   readCheckpoint,
@@ -361,6 +361,12 @@ export default {
            (SELECT COUNT(*) FROM ingest_log) AS examined`,
       ).first<{ tickets: number; messages: number; examined: number }>();
       return Response.json({ checkpoint, counts, outbox: await outboxSummary(env.DB) });
+    }
+
+    // Read-only. Deliberately separate from /poll, which now sends mail:
+    // inspecting the mailbox must never be able to email anyone.
+    if (url.pathname === "/peek") {
+      return Response.json(await peekRecent(env.GMAIL_USER, env.GMAIL_APP_PASSWORD));
     }
 
     if (url.pathname === "/diag") {
