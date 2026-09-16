@@ -253,7 +253,22 @@ being marked not-spam by hand.
 error: receivers treat the domain as having no valid SPF. Gmail sees a failed check and
 files the mail as spam. This affects all company mail, not just this system.
 
-The fix is to delete both TXT records and publish one merged record:
+**Fixed on 17 September 2026.** The two records were merged into one at Hostinger, which
+is the live zone — the registrar is Squarespace but its DNS panel is not served, so
+editing there would have changed nothing. Verified as a single record at the
+authoritative nameserver and at both 1.1.1.1 and 8.8.8.8.
+
+A following test email went straight to INBOX instead of Spam and was ingested without
+being rescued by hand. Gmail had also been told "not spam" once, so the clean result is
+not attributable to SPF alone, but the record is now valid where it was a permanent
+error.
+
+The merged record uses 6 of the 10 permitted DNS lookups: `a` (1), `mx` plus the A lookup
+for `gw.allcheckservices.com` (2), and the Hostinger include with its two nested includes
+(3), both of which terminate in plain IP ranges. Adding senders later needs to respect
+that ceiling.
+
+The record now published:
 
 ```
 v=spf1 +a +mx ip4:49.50.108.191 ip4:49.50.108.192 ip4:103.10.190.17 ip4:103.10.190.18
