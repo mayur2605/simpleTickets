@@ -280,7 +280,11 @@ tickets and hide a genuine problem with the mail domain. But it does raise a des
 requirement — mail that silently never becomes a ticket is worse than a visible failure,
 so ingestion needs to surface gaps rather than sit quietly.
 
-## Accepted architecture, 17 September 2026
+## Accepted architecture, 17 September 2026 — SUPERSEDED
+
+> **Superseded the same day.** Resend was dropped after outbound mail bounced; see
+> "Accepted architecture, second revision" at the end of this document. The Cloudflare
+> Workers half of this decision stands. Kept for the evidence, not as guidance.
 
 The user chose **Cloudflare Workers for the application and Resend for mail transport**,
 on the evidence below. This supersedes the IMAP-polling transport in
@@ -330,7 +334,10 @@ separately.
 - **Delivery-failure visibility.** `email.bounced` and `email.failed` are not subscribed
   yet; R15 needs them.
 
-## Inbound mail proved working over Resend, 17 September 2026
+## Inbound mail proved working over Resend, 17 September 2026 — SUPERSEDED
+
+> Retained as evidence. Resend inbound genuinely worked; Resend **outbound** did not, and
+> that is what closed this path. See the final section.
 
 A real message from a company address reached the webhook receiver end to end on the
 first attempt: Resend accepted it for `support@tickets.allcheckservices.com`, signed the
@@ -391,6 +398,116 @@ anything about staff authentication.
 2. Confirm IMAP authentication and restricted read operations, then test SMTP delivery only after explicit authorization of test sender and recipient.
 3. Run the same integration from Cloudflare and measure CPU/memory using representative 5 MB attachments and secure password hashing.
 4. Measure cron, database and backup behavior, then finalize hosting. If free Workers cannot safely meet the requirements, present a measured paid or alternate-host proposal rather than weakening security or silently adding a mail bridge.
+
+## Accepted architecture, second revision — 17 September 2026
+
+Mail transport is **Gmail IMAP with a Google App Password**, polled from a Cloudflare
+Worker on a two-minute cron. Mailbox: `simpleticketssupport@gmail.com`.
+
+### Why Resend was dropped after being accepted
+
+Inbound was proved and worked on the first attempt. **Outbound never did.** A send
+attempt bounced with:
+
+```
+550 ... black list hostkarma.junkemailfilter.com
+```
+
+The sending IP was checked against Spamhaus ZEN and SpamCop and was **clean on both** —
+HostKarma alone was rejecting it. That is a shared-IP reputation problem on the
+provider's side, not a configuration error we can correct. A ticketing system whose
+replies bounce is not usable, so the transport was closed.
+
+Recorded so the trade is not re-litigated: Resend inbound is good and the webhook design
+in the superseded section above is sound. It was the sending half that failed.
+
+### Why the Gmail API was not used instead
+
+`gmail.readonly` is a restricted scope. Publishing an app that uses one requires Google's
+verification process, and **Publish App is disabled** on this project. An unpublished app
+expires its refresh token every 7 days, which would mean re-authorising the ingestion
+worker weekly. Rejected.
+
+### What is proved on the accepted stack
+
+| Concern | Decision | Proved? |
+| --- | --- | --- |
+| Application hosting | Cloudflare Workers | Deploys and serves; CPU measured |
+| Receiving mail | Gmail IMAP via `imapflow` under `nodejs_compat` | Yes — real emails are now tickets in D1 |
+| Authentication to the mailbox | Google App Password, no OAuth | Yes |
+| Message body extraction | `download("TEXT")` plus `htmlToText()` | Yes, after four corrections (below) |
+| Storage | D1 `simpletickets`, ticket+message+log in one batch | Yes |
+| Idempotency | `ingest_log.uid` primary key | Yes, by construction |
+| Launch cutoff (R27) | First run adopts `uidNext - 1` | Yes |
+| Scheduled execution | `crons = ["*/2 * * * *"]` | **Under measurement — see below** |
+| Sending mail | **None chosen** | No transport has ever sent a reply |
+
+### Four corrections made while getting the body out
+
+Each of these produced a confident wrong conclusion first. Recorded so they are not
+rediscovered:
+
+1. "IMAP literals stall on Workers" — **wrong**. Testing four fetch strategies against a
+   *single* UID showed all four work. Only **ranges** stall. Poll one UID at a time.
+2. `bodyParts` returns the raw transfer encoding, so the first "working" body was base64
+   text. `download()` decodes.
+3. A **single-part** message has no part identifier, so `download()` with one returned the
+   entire raw message including headers. Addressing `"TEXT"` fixes it.
+4. The message was **HTML-only**, which is normal for Gmail-composed mail. `htmlToText()`
+   in `worker/src/domain.ts` handles it; its tests were corrected so `</p>` yields a
+   paragraph break rather than a single newline.
+
+### SPF, and why the first test mail went to Spam
+
+The domain published **two** SPF records. RFC 7208 allows exactly one; two is a
+`permerror`, and receivers treat the domain as having no valid SPF at all. Gmail saw the
+failed check and filed company mail as spam. The records were merged into one; every
+resolver now returns a single record and the lookup count is 6 of the permitted 10. The
+next test mail went straight to INBOX.
+
+A related red herring: an `AAAA` lookup appeared to return a NAT64 address. That was the
+local DNS64 resolver synthesising it — the authoritative zone has only an `A` record.
+
+DMARC policy is an open decision, tracked as PRD open point 7. What the domain currently
+publishes, and the gap that leaves, are deliberately not written down here: this
+repository is public, and a note about a live domain's enforcement posture is a map for
+anyone who wants to abuse it. The progression itself is standard and documented
+upstream - collect aggregate reports, review them, then tighten - and does not need
+restating in a repository to be followed.
+
+### Cron trigger — under measurement, 17 September 2026 ~02:10 IST
+
+The two-minute cron has **not been observed firing**. Every ticket created so far came
+from a manual `POST /poll`. Verified directly against the Cloudflare API, not the
+dashboard:
+
+| Check | Result |
+| --- | --- |
+| Schedule registered | `*/2 * * * *`, modified `2026-09-16T20:13:44Z` |
+| Exported handlers | `['scheduled', 'fetch']` |
+| Deployed versions | One, at 100% |
+| Account suspended | No |
+
+Two earlier measurements that were quoted as evidence are **withdrawn**:
+
+- The "zero cron events in two 150-second `wrangler tail` windows" runs used `timeout`,
+  which **does not exist on macOS**. The command died immediately and wrote nothing; an
+  empty file was read as "no cron events". It was not evidence.
+- A run that reported cron *had* fired was also wrong: it counted `ingest_log` rows after
+  a partial reset that left an earlier row in place, so a pre-existing row was read as new
+  activity.
+
+Two documented Cloudflare behaviours also invalidate the earlier sampling windows:
+
+- A schedule change takes **up to 15 minutes** to propagate globally. The worker was
+  redeployed repeatedly, so every window sampled sat inside a fresh propagation period.
+  The last deploy was `20:13:44Z`, so the first clean window began at `20:28:44Z`.
+- **Past Cron Events** can take **up to 30 minutes** to display on a new Worker, so a
+  dashboard reading of 0 was never meaningful either.
+
+A clean measurement is running now: D1 baseline cleared to 0 tickets / 0 log rows with
+`last_uid = 6` and uid 7 pending, polled every 45 s, alongside a real 5-minute
+`wrangler tail`, with no manual `/poll` issued. Result to be recorded here.
 
 ## Primary sources
 

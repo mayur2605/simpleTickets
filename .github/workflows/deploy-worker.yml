@@ -1,0 +1,48 @@
+name: Deploy worker
+
+# Only worker changes deploy. This path filter is load-bearing, not tidiness:
+# a Cloudflare schedule change takes up to 15 minutes to propagate globally, and
+# every deploy restarts that clock. Redeploying on documentation commits would
+# keep the ingestion cron permanently inside a propagation window.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys race to the same Worker.
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - run: npm ci
+
+      # The gate runs before the deploy, never after: typecheck, unit tests and a
+      # dry-run build. A red gate must not reach production.
+      - run: npm run verify
+
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          # Secrets already set with `wrangler secret put` are preserved by a
+          # deploy; they are not managed here and must never be put in this file.
+          command: deploy

@@ -1,5 +1,15 @@
 # Provisional Technical Plan
 
+> **Mailbox correction, 17 September 2026.** The IMAP-polling design in this plan is
+> current and is being implemented — but **not against Zimbra**. A Cloudflare Worker
+> cannot reach `mail.allcheckservices.com` on 993, 465 or 587. The mailbox is now
+> `simpleticketssupport@gmail.com` over Gmail IMAP with an App Password. Read
+> "Architecture decision" in `AGENTS.md` before implementing ingestion. Every reference
+> below to Zimbra as the ingestion or submission host is withdrawn; the surrounding
+> polling, threading, idempotency and delivery-gating design stands. SMTP submission has
+> **no host at all** right now — see PRD open point 6.
+
+
 Status: proposal, subject to feasibility tests and remaining product clarifications. It reflects the decisions approved on 16 September 2026 (PRD, “Approved 16 September 2026 — not implemented”); none of them is built.
 
 ## Candidate architecture

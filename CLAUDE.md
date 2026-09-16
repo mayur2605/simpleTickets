@@ -6,7 +6,7 @@ Read `AGENTS.md` and `docs/engineering-standards.md` first — they are the bind
 
 ## Project overview
 
-SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it. Current status: interactive frontend prototype with an enforced quality gate; production backend not implemented.
+SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it. Current status: an interactive frontend prototype with an enforced quality gate, plus a **deployed ingestion backend** that turns real emails into real tickets in D1. The two are not connected — the prototype is still in-memory — and the system cannot send any mail at all, so it can open a ticket but not answer one.
 
 ## Architecture
 
@@ -14,24 +14,34 @@ SimpleTickets is an email-based internal IT ticketing system for a 100-person or
 - `prototype/`: React 19 + TypeScript + Vite frontend with Fluent UI React v9 components
 - `prototype/src/domain/`: production domain rules, free of React, storage and transport — start here for business logic, not in `main.tsx`
 - Single-file prototype (`src/main.tsx`) with in-memory state for UI review
+- `worker/`: **deployed** Cloudflare Worker that polls Gmail over IMAP and opens tickets in D1. Real emails have become real tickets. No dashboard reads it yet — the prototype is still in-memory and unconnected.
 - `scripts/check-mail-tls.mjs`: unauthenticated Zimbra TLS probe
 - `tools/mail-check/`: interactive IMAP/SMTP authentication check, run by hand, its own package
 - `.github/workflows/prototype-quality.yml`: runs `npm run verify` on push/PR — first remote run green 16 Sep 2026
-- No backend, authentication, database, or email integration yet
+- `.github/workflows/deploy-worker.yml`: deploys `worker/` to Cloudflare on push to `main`
+- Still missing: authentication, the dashboard-to-database connection, and any outgoing mail
 
-**Planned production stack (provisional):**
-- Cloudflare Workers for API and scheduled jobs
-- D1 for tickets, messages, accounts, templates, audit events
-- R2 for attachments and backups
-- Zimbra IMAP/SMTP integration (mail.allcheckservices.com)
+**Production stack, as actually built:**
+- Cloudflare Workers for the API and the two-minute ingestion cron
+- D1 (`simpletickets`) for tickets, messages and the ingestion checkpoint — live
+- Gmail IMAP (`simpleticketssupport@gmail.com`) for receiving, via App Password
+- R2 for attachments and backups — not started
+- Sending mail — **no transport chosen**; every candidate so far failed on outbound
 
 ## Architecture decision — 17 September 2026
 
-Mail transport is **Resend**, not IMAP; the app runs on **Cloudflare Workers**. This
-supersedes the IMAP-polling design in `specs/001-email-ticketing/plan.md` and T010 —
-a Worker cannot reach `mail.allcheckservices.com` on any port, so polling cannot work.
-Read the "Architecture decision" section of `AGENTS.md` and `docs/stack-validation.md`
-before touching ingestion, and do not implement IMAP polling.
+Mail transport is **Gmail IMAP polling with a Google App Password**, on **Cloudflare
+Workers**. This **reverses** the Resend decision taken earlier the same day: Resend's
+inbound worked, but its outbound bounced on a HostKarma blacklisting we do not control.
+Zimbra IMAP stays closed — a Worker cannot reach `mail.allcheckservices.com` on any port.
+
+So `specs/001-email-ticketing/plan.md` and T010 are **current again**, not superseded:
+two-minute polling with a UIDVALIDITY/UID checkpoint is the design, and `worker/`
+implements it. Read the "Architecture decision" section of `AGENTS.md` and
+`docs/stack-validation.md` before touching ingestion.
+
+**Sending is still unsolved.** No transport has ever successfully sent a reply. Do not
+write code that assumes one exists.
 
 ## Essential documents (read in order)
 
@@ -90,6 +100,46 @@ npm run build             # tsc + vite build
 
 Prettier owns formatting for everything except `node_modules`, `dist` and `package-lock.json`. Run `npm run format` after editing — an unformatted file fails the gate at `format:check`, before the tests ever run.
 
+## The worker
+
+The backend lives in `worker/` and is its own npm package with its own gate:
+
+```bash
+cd worker
+npm ci
+npm run verify        # typecheck + unit tests + `wrangler deploy --dry-run`
+npm run test:unit     # vitest run — 17 cases, all against src/domain.ts
+npm run deploy        # wrangler deploy (prefer the CI workflow)
+```
+
+- **It is deployed and live.** `simpletickets-api`, on the Cloudflare account belonging to
+  `simpleticketssupport@gmail.com`, bound to the D1 database `simpletickets`.
+- Secrets (`GMAIL_APP_PASSWORD`, `ADMIN_TOKEN`) are set with `wrangler secret put` and are
+  **preserved across deploys**. Never put them in `wrangler.toml` or a workflow file.
+- `fetch()` is token-gated and returns `404` — not `401` — to an unauthenticated caller,
+  so the worker does not advertise itself. Routes: `GET /status`, `POST /poll`, `GET /diag`.
+- Tests cover `domain.ts` only. `imap.ts`, `store.ts` and `index.ts` have none, so
+  checkpoint recovery and idempotency-under-overlap are argued, not demonstrated.
+
+### Deploying
+
+`.github/workflows/deploy-worker.yml` deploys on push to `main`, but **only when
+`worker/**` changes**. That path filter is deliberate: a Cloudflare schedule change takes
+up to 15 minutes to propagate globally and every deploy restarts that clock, so
+redeploying on documentation commits would keep the ingestion cron permanently inside a
+propagation window. Do not widen the filter.
+
+It requires two GitHub repository secrets, neither of which is in the repo:
+
+| Secret | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | An API token with the *Edit Cloudflare Workers* template, scoped to this account |
+| `CLOUDFLARE_ACCOUNT_ID` | The account ID for `simpleticketssupport@gmail.com` |
+
+The gate (`npm run verify`) runs before the deploy step, so a red gate never reaches
+production. Note the gap: the workflow runs on push to `main` only, so a pull request
+touching `worker/` is not checked by CI.
+
 ## The smoke test
 
 `prototype/checks/smoke.mjs` is a single linear Playwright script, not a test runner: no watch mode, no filters, no way to run one case. It starts **its own Vite server on port 5174** (`strictPort`), so it does not touch a preview server on 5173 — but two concurrent smoke runs will collide on 5174.
@@ -146,9 +196,13 @@ Hooks in `.githooks/` enforce part of this automatically — enable them once pe
 
 ## Unresolved items
 
-- Cloudflare-origin Zimbra connectivity, CPU limits for password hashing and MIME parsing, not validated
-- Mail delivery round trip never performed; only TLS handshakes and a user-reported local auth check
-- Backup storage provider and restore procedures not finalized
-- Production hosting choice pending feasibility tests
+- **Sending mail has no transport.** Zimbra SMTP is unreachable from Workers; Resend's outbound bounced on a HostKarma blacklisting outside our control. R02's acknowledgement, R13's replies and R15's failure visibility are all blocked on this. PRD open point 6.
+- **The two-minute cron has never been observed firing.** Every ticket so far came from a manual `POST /poll`. Schedule, handlers and deployment all verify correct against the Cloudflare API. Under measurement — see "Cron trigger" in `docs/stack-validation.md`.
+- **No mail reaches the system from the published address.** Employees write to `support@allcheckservices.com`; the poller reads `simpleticketssupport@gmail.com`. Nothing forwards between them yet. PRD open point 5.
+- **The dashboard reads none of this.** Connecting the prototype to D1 is not started.
+- R06 staff password hashing: Workers WebCrypto caps PBKDF2 at 100,000 iterations against current guidance of 600,000. Needs WebAssembly Argon2id/bcrypt or an explicit recorded acceptance.
+- **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.
+- Backup storage provider and restore procedures not finalized; D1 Free gives 7 days of Time Travel against the agreed 30-day window, so separate exports are required
+- CPU limits for MIME parsing and 5 MB attachments not measured
 - What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity detection (open point 4)
 - ESLint pinned at 9 (jsx-a11y peer ceiling) though npm marks 9 out of support; TypeScript pinned to 6.0.2 for typed-ESLint compatibility

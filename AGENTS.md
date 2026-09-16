@@ -4,43 +4,52 @@ Read docs/engineering-standards.md, docs/PRD.md, docs/brand.md and the feature s
 
 ## Architecture decision — 17 September 2026, read before implementing ingestion
 
-Mail transport is **Resend**, not IMAP. The application runs on **Cloudflare Workers**.
-This supersedes the IMAP-polling design still written in
-`specs/001-email-ticketing/plan.md` and T010. Evidence and detail:
-`docs/stack-validation.md`.
+Mail transport is **Gmail IMAP polling with a Google App Password**, from a Cloudflare
+Worker on a two-minute cron. The mailbox is `simpleticketssupport@gmail.com`. Evidence
+and full measurement history: `docs/stack-validation.md`.
 
-**Do not implement IMAP polling.** It cannot work: a Cloudflare Worker cannot open a
-connection to `mail.allcheckservices.com` on 993, 465 or 587. All three time out, as does
-the bare IP, while `imap.gmail.com:993` connects from the same Worker in 68 ms and the
-development machine reaches the same address fine. The mail host drops Cloudflare's
-traffic. No code change alters this.
+**This reverses the Resend decision recorded earlier the same day, and restores IMAP
+polling.** Three transports were tried and closed with evidence before this one:
 
-What replaces it, proved working end to end on 17 September 2026:
+| Transport | Outcome |
+| --- | --- |
+| Zimbra IMAP (`mail.allcheckservices.com`) | Closed. A Worker cannot reach it on 993, 465 or 587 — all time out, as does the bare IP, while `imap.gmail.com:993` connects from the same Worker in 68 ms and the development machine reaches the same host fine. The mail host drops Cloudflare's traffic. No code change alters this. |
+| Resend | Closed. Inbound worked end to end on the first attempt, but **outbound bounced**: `550 ... black list hostkarma.junkemailfilter.com`. The sending IP was clean on Spamhaus ZEN and SpamCop, so this is not ours to fix. A transport that cannot reply is not a ticketing transport. |
+| Gmail API | Closed. `gmail.readonly` is a restricted scope; Publish App is disabled on this project, and an unpublished app expires its refresh token every 7 days. |
+| **Gmail IMAP + App Password** | **Accepted.** Proved end to end: Workers reach Gmail, `imapflow` runs under `nodejs_compat`, an App Password authenticates without OAuth, and real emails have become tickets in D1. |
 
-1. Resend delivers `email.received` to a webhook within seconds of arrival.
-2. `tools/inbound-webhook/` verifies the Svix signature and returns 2xx.
-3. The body, full headers and attachment URLs come from a **second** call to
-   `GET /emails/receiving/{email_id}`. The webhook payload carries metadata only — no
-   body, and no `In-Reply-To` or `References`, so a ticket cannot be threaded from the
-   webhook alone.
+So `specs/001-email-ticketing/plan.md` and T010 are **no longer superseded** — two-minute
+polling, the UIDVALIDITY/UID checkpoint and the UID launch cutoff are the design again,
+and are partly implemented in `worker/`. R01 keeps `support@allcheckservices.com` as the
+published address only if Zimbra forwards to the Gmail mailbox; that forwarding is an
+open product decision and is **not** configured.
 
-Consequences that change the requirements, not yet applied to the PRD/spec/tasks:
+What is built and proved in `worker/`:
 
-- R01: mail arrives at `support@tickets.allcheckservices.com`. Whether employees use that
-  address or Zimbra forwards the old one to it is an open product decision.
-- R02: "poll every two minutes" becomes delivery on arrival.
-- T010: mailbox polling, IMAP leases, UIDVALIDITY reconciliation and the UID launch
-  cutoff have no equivalent. R27's launch boundary is trivial — the subdomain mailbox has
-  no pre-launch history.
-- Idempotency keys on `email_id`: Svix retries until it gets a 2xx, so one email can
-  arrive more than once and must produce one ticket.
-- R12: the 5 MB limit is enforced against bytes actually fetched, since attachments
-  arrive as download URLs.
+1. `scheduled()` on `crons = ["*/2 * * * *"]` calls `ingest()`.
+2. `readNewMail()` fetches UIDs above the checkpoint; `ingest_log.uid` is the primary key,
+   so a retried or overlapping run inserts nothing the second time and one email can never
+   open two tickets.
+3. First run adopts `uidNext - 1` and imports nothing, which is R27's launch cutoff in one
+   integer.
+4. `createTicket()` writes ticket, message and log in one D1 batch so they commit together.
 
-Still unproved on this stack: **sending has never been tested**, `email.bounced` and
-`email.failed` are not subscribed yet (R15 needs them), and Workers WebCrypto refuses
-PBKDF2 above 100,000 iterations, which blocks R06 until Argon2id/bcrypt via WebAssembly
-is chosen or the cap is explicitly accepted.
+Known IMAP behaviours that cost real debugging time, recorded so they are not rediscovered:
+
+- A `N:*` range **always returns the newest message** even when nothing is new. Idempotency
+  is what makes this safe, not the range.
+- Fetching a **UID range** stalls; fetching a **single UID** does not. Poll one UID at a time.
+- `bodyParts` returns the raw transfer encoding. Use `download()` instead, or decode by hand.
+- A **single-part** message has no part identifier, so `download()` with one returns the
+  entire raw message including headers. Address `"TEXT"`.
+- Gmail-composed mail is frequently **HTML-only**; `htmlToText()` in `worker/src/domain.ts`
+  exists because of this.
+
+Still unproved on this stack: **sending has never been tested** from any transport,
+delivery-failure visibility for R15 has no mechanism yet, and Workers WebCrypto refuses
+PBKDF2 above 100,000 iterations, which blocks R06 until Argon2id/bcrypt via WebAssembly is
+chosen or the cap is explicitly accepted. The cron trigger's reliability is under active
+measurement — see "Cron trigger" in `docs/stack-validation.md`.
 
 ## Required engineering workflow
 

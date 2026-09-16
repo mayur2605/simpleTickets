@@ -10,7 +10,7 @@ An internal employee can request IT help by email, track the conversation throug
 
 | ID | Requirement |
 | --- | --- |
-| R01 | Accept employee requests only from `@allcheckservices.com` sent to `support@allcheckservices.com`; use existing Zimbra at `mail.allcheckservices.com`. |
+| R01 | Accept employee requests only from `@allcheckservices.com` sent to `support@allcheckservices.com`. The sender rule is unchanged and implemented. **The Zimbra clause is withdrawn:** a Cloudflare Worker cannot reach `mail.allcheckservices.com` on any port, so the mailbox is now `simpleticketssupport@gmail.com`, polled over IMAP. How mail reaches it from the published address is open point 5. |
 | R02 | Poll for new mail every two minutes. Create a ticket and send an acknowledgement containing its ticket number. |
 | R03 | Append email replies to the same ticket. Employees use email only. |
 | R04 | Five IT staff work exclusively in the dashboard; it is the only place they read tickets, reply, add internal notes and change status, priority or assignment. Staff never work a ticket by email, and a reply to an IT notification email is not ingested. All can view/update every ticket, change priority, and manually reassign tickets. |
@@ -63,11 +63,26 @@ The user approved these eight decisions. They are recorded in the requirements a
 ## Open points
 
 1. Confirm the backup storage provider, restore-time feasibility, and capacity/cost growth beyond free allowances. Daily backups and 30-day recovery-point retention are decided.
-2. Verify trusted sender authentication, delivery and Cloudflare-origin compatibility. Local TLS passed on 993/465 and the user reported local authentication PASS; credentials were not supplied in conversation. See stack-validation.md.
+2. ~~Verify trusted sender authentication, delivery and Cloudflare-origin compatibility.~~ **Resolved for receiving, 17 September 2026.** Cloudflare-origin Zimbra access is impossible and the transport moved to Gmail IMAP; real emails now become tickets. **Still open for sending:** no transport has ever successfully sent a reply, so R02's acknowledgement, R13's replies and R15's failure visibility are all unproved. See stack-validation.md.
 
 3. Decide what an employee reply does to a Waiting, Resolved or closure transition whose required email has not yet been accepted: cancel the pending transition and leave the ticket open, or apply it on acceptance and let the reply reopen the ticket immediately. The approved rule in R28 covers the waiting period itself, not this collision.
 
 4. Handle SMTP acceptance ambiguity: a disconnect after the server accepted a message must not be recorded as a failure, nor an unacknowledged send as an acceptance. R28 settles what a transition waits for; the detection mechanism is still an implementation question.
+
+5. **Decide how mail reaches the support mailbox.** The published address is
+   `support@allcheckservices.com`; the mailbox that is actually polled is
+   `simpleticketssupport@gmail.com`. Either employees are told the new address, or the
+   Zimbra administrator forwards the published one to it. Forwarding keeps the address
+   employees already know but reintroduces a dependency on the mail administrator.
+   **Nothing is configured yet, so no employee mail reaches the system today.**
+
+6. **Choose a sending transport.** Zimbra SMTP is unreachable from Workers and Resend's
+   outbound bounced on a HostKarma blacklisting we do not control. Until this is settled,
+   the system can open tickets but cannot answer them.
+
+7. **Decide the DMARC policy.** Open. What the domain publishes today is deliberately not
+   recorded here - see the note in `docs/stack-validation.md` for why a public repository
+   is the wrong place for it.
 
 ## Success and release criteria
 
