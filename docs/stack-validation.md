@@ -111,6 +111,30 @@ purchased:
 D1, R2, cron scheduling and MIME parsing remain unmeasured; they are not worth measuring
 until the transport question is settled.
 
+## IMAP works on Workers, 17 September 2026
+
+A Worker held a real IMAP dialogue with `imap.gmail.com:993`: read the greeting, wrote
+`a1 CAPABILITY`, parsed the tagged `a1 OK` reply, then logged out. 929 ms end to end.
+This is stronger than the earlier reachability probe, which only read a banner — it
+proves the runtime can **write** to a socket and follow a stateful line protocol, which
+is what a poller needs.
+
+Gmail advertises `AUTH=PLAIN` with no `LOGINDISABLED`, so a Google App Password will
+authenticate. No OAuth is required.
+
+Why this matters: the Gmail **API** path is closed on a free Gmail account.
+`gmail.readonly` is a restricted scope, and publishing an app that uses one requires a
+privacy policy, terms of service, an authorised domain and a security assessment. The
+consent screen's Publish button stays disabled until then, and an unpublished app
+expires refresh tokens after seven days — which would silently stop ingestion every week.
+
+So the workable path is App Password plus IMAP, on Workers, with no VPS and no Workspace
+seat. Cost: nothing.
+
+One open question before building: whether `imapflow` runs under `nodejs_compat`, or
+whether a minimal IMAP client has to be written by hand. The probe proves the transport;
+it does not prove a library works.
+
 ## Accepted architecture, 17 September 2026
 
 The user chose **Cloudflare Workers for the application and Resend for mail transport**,

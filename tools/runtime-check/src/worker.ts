@@ -161,6 +161,92 @@ async function probeTls(host: string, port: number): Promise<Response> {
   }
 }
 
+
+/**
+ * Hold a real IMAP dialogue: read the greeting, send CAPABILITY, read the
+ * tagged reply, then LOGOUT. Opening a socket only proves reachability; this
+ * proves the runtime can write to the socket and parse a stateful line
+ * protocol, which is what an IMAP poller actually needs. No credentials are
+ * used — CAPABILITY is answered before authentication.
+ */
+async function probeImap(host: string, port: number): Promise<Response> {
+  const started = Date.now();
+  let stage = "connect";
+  let socket;
+  try {
+    socket = connect(
+      { hostname: host, port },
+      { secureTransport: "on", allowHalfOpen: false },
+    );
+    await withTimeout(socket.opened, CONNECT_TIMEOUT_MS, "connect timeout");
+
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let buffer = "";
+
+    /** Read until `marker` appears, or give up. */
+    async function readUntil(marker: string, label: string): Promise<string> {
+      const deadline = Date.now() + SOCKET_TIMEOUT_MS;
+      while (!buffer.includes(marker)) {
+        if (Date.now() > deadline) throw new Error(`${label} timeout`);
+        const chunk = await withTimeout(reader.read(), SOCKET_TIMEOUT_MS, `${label} timeout`);
+        if (chunk.done || chunk.value === undefined) break;
+        buffer += decoder.decode(chunk.value);
+        if (buffer.length > 64_000) break;
+      }
+      const seen = buffer;
+      buffer = "";
+      return seen;
+    }
+
+    stage = "greeting";
+    const greeting = await readUntil("\r\n", "greeting");
+
+    stage = "capability";
+    await writer.write(encoder.encode("a1 CAPABILITY\r\n"));
+    const capability = await readUntil("a1 OK", "capability");
+
+    stage = "logout";
+    await writer.write(encoder.encode("a2 LOGOUT\r\n"));
+    await readUntil("a2 OK", "logout").catch(() => "");
+
+    reader.releaseLock();
+    writer.releaseLock();
+
+    return json({
+      probe: "imap",
+      host,
+      port,
+      spokeImap: capability.includes("CAPABILITY"),
+      greeting: greeting.trim().slice(0, 90),
+      capabilities: capability.replace(/\s+/g, " ").trim().slice(0, 240),
+      wallMs: Date.now() - started,
+      note: "Protocol dialogue only. No login attempted, no mailbox opened.",
+    });
+  } catch (error) {
+    return json({
+      probe: "imap",
+      host,
+      port,
+      spokeImap: false,
+      failedAt: stage,
+      category: errorCategory(error),
+      detail: error instanceof Error ? error.message.slice(0, 160) : "unknown",
+      wallMs: Date.now() - started,
+    });
+  } finally {
+    if (socket !== undefined) {
+      try {
+        await socket.close();
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+}
+
 /**
  * Derive one PBKDF2 hash with a synthetic password, to size secure password
  * verification against the CPU allowance.
@@ -220,6 +306,14 @@ export default {
         return json({ error: "port not in allowlist", allowed: [...ALLOWED_PORTS] }, 400);
       }
       return probeTls(host, port);
+    }
+    if (url.pathname === "/imap") {
+      const host = url.searchParams.get("host") ?? MAIL_HOST;
+      const port = Number(url.searchParams.get("port") ?? "993");
+      if (!ALLOWED_HOSTS.has(host) || !ALLOWED_PORTS.has(port)) {
+        return json({ error: "host or port not in allowlist" }, 400);
+      }
+      return probeImap(host, port);
     }
     if (url.pathname === "/hash") {
       const raw = Number(url.searchParams.get("iterations") ?? String(DEFAULT_ITERATIONS));
