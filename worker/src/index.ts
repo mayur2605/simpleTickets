@@ -26,6 +26,7 @@ import {
 } from "./store";
 import { buildReply } from "./reply";
 import { transitionRule, STATUSES, type Status } from "./transitions";
+import { responseState } from "./overdue";
 import { isAuthorised } from "./auth";
 
 export { Ticker } from "./ticker";
@@ -97,7 +98,29 @@ export default {
     }
 
     if (url.pathname === "/api/tickets" && request.method === "GET") {
-      return Response.json({ tickets: await listTickets(env.DB) });
+      const now = new Date();
+      const tickets = (await listTickets(env.DB)).map((ticket) => ({
+        ...ticket,
+        ...responseState(ticket.response_due, ticket.first_response_at, ticket.status, now),
+      }));
+
+      // A queue summary, because the first question anyone asks is "what needs
+      // attention" and counting rows by hand in a UI is how that gets answered
+      // wrongly.
+      const byStatus: Record<string, number> = {};
+      for (const ticket of tickets) {
+        byStatus[ticket.status] = (byStatus[ticket.status] ?? 0) + 1;
+      }
+      return Response.json({
+        summary: {
+          total: tickets.length,
+          overdue: tickets.filter((ticket) => ticket.overdue).length,
+          unassigned: tickets.filter((ticket) => ticket.owner === null).length,
+          awaitingFirstResponse: tickets.filter((ticket) => !ticket.met).length,
+          byStatus,
+        },
+        tickets,
+      });
     }
 
     const ticketMatch = /^\/api\/tickets\/(\d+)(\/reply|\/note|\/status)?$/.exec(url.pathname);
@@ -109,7 +132,18 @@ export default {
       }
 
       if (request.method === "GET" && ticketMatch[2] === undefined) {
-        return Response.json(detail);
+        return Response.json({
+          ...detail,
+          ticket: {
+            ...detail.ticket,
+            ...responseState(
+              detail.ticket.response_due,
+              detail.ticket.first_response_at,
+              detail.ticket.status,
+              new Date(),
+            ),
+          },
+        });
       }
 
       if (request.method === "POST") {

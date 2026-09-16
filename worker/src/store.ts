@@ -466,6 +466,12 @@ export interface TicketRow {
   priority: string;
   owner: string | null;
   response_due: string | null;
+  /**
+   * Earliest outbound message. The automatic acknowledgement is never written
+   * to `messages`, so this can only be a real reply from IT - which is what
+   * R28 requires to satisfy a response deadline.
+   */
+  first_response_at: string | null;
   created_at: string;
   updated_at: string;
   messages: number;
@@ -477,6 +483,8 @@ export async function listTickets(db: D1Database, limit = 100): Promise<TicketRo
     .prepare(
       `SELECT t.id, t.subject, t.requester, t.status, t.priority, t.owner,
               t.response_due, t.created_at, t.updated_at,
+              (SELECT MIN(m.created_at) FROM messages m
+                WHERE m.ticket_id = t.id AND m.direction = 'outbound') AS first_response_at,
               (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS messages
          FROM tickets t
         ORDER BY t.updated_at DESC, t.id DESC
@@ -504,6 +512,8 @@ export async function getTicket(db: D1Database, id: number): Promise<TicketDetai
     .prepare(
       `SELECT t.id, t.subject, t.requester, t.status, t.priority, t.owner,
               t.response_due, t.created_at, t.updated_at,
+              (SELECT MIN(m.created_at) FROM messages m
+                WHERE m.ticket_id = t.id AND m.direction = 'outbound') AS first_response_at,
               (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id) AS messages
          FROM tickets t WHERE t.id = ?`,
     )
