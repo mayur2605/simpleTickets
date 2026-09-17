@@ -729,6 +729,60 @@ lost alarm ends it silently. The reschedule-first ordering protects against fail
 inside a tick, not against the chain ending. A watchdog that notices "no tick in N
 minutes" is needed before this is relied on in production.
 
+## Password hashing on Workers, measured — 17 September 2026
+
+R06 was blocked all night on the belief that Workers could not reach current
+password-hashing guidance. Workers' WebCrypto refuses a single PBKDF2 `deriveBits`
+above 100,000 iterations, and guidance for PBKDF2-HMAC-SHA256 is 600,000.
+
+**The cap is per call, not on total work.** Six chained rounds — each derived key fed
+back in as the next round's input, under the same salt — cost an attacker 600,000
+iterations to test one candidate password. Ordinary iterated key stretching.
+
+Measured on the deployed worker, not inferred:
+
+| Quantity | Value |
+| --- | --- |
+| Rounds x iterations | 6 x 100,000 = 600,000 |
+| Correct password accepted | Yes |
+| Wrong password rejected | Yes |
+| CPU for hash + 2 verifies (18 rounds) | **373 ms** (p50), 377 ms (p99) |
+| Derived cost per 100,000-iteration round | ~20.7 ms |
+| **CPU for one login (6-round verify)** | **~124 ms** |
+
+The in-request timer reported 0 ms and is worthless: Cloudflare freezes `Date.now()`
+during synchronous execution as a timing-attack mitigation, so the clock only advances on
+I/O. These figures come from Cloudflare's own `cpuTimeP50`/`cpuTimeP99` analytics. Any
+future attempt to time CPU work from inside a Worker will hit the same wall.
+
+What this does **not** buy: PBKDF2 is not memory-hard. Argon2id and scrypt resist GPU and
+ASIC attack in a way no iteration count does. The stored format is
+`scheme$rounds$iterations$salt$hash` and verification uses the parameters recorded in each
+stored value, so a memory-hard KDF can replace this later, and the cost can be raised,
+without invalidating anyone's existing password.
+
+### Accepted trade-off: username enumeration by timing
+
+Login returns early for an unknown account **without** running the KDF. A real account
+therefore takes ~124 ms and an unknown one ~1 ms, so valid staff names are distinguishable
+by timing alone.
+
+The textbook fix is to hash against a dummy value so every attempt costs the same. That
+was considered and **rejected**, because it turns an expensive KDF on an unauthenticated
+endpoint into a denial-of-service amplifier: the throttle counts failures per account, so
+an attacker using random names never trips it while costing us ~124 ms of CPU per request.
+
+| Option | Cost |
+| --- | --- |
+| Early return (chosen) | Staff names enumerable by timing |
+| Always hash | ~124 ms CPU per request from any anonymous caller |
+
+Accepted on 17 September 2026 because the accounts are named `staff1`–`staff5`: they are
+guessable without any timing attack, so enumeration resistance protects nothing real,
+while the DoS vector is concrete. **Revisit this if account names ever become
+non-obvious** — real names or email addresses would make enumeration meaningful, and the
+decision should flip to always-hash plus a global (not per-account) rate limit.
+
 ## Primary sources
 
 - [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)

@@ -91,6 +91,15 @@ The user approved these eight decisions. They are recorded in the requirements a
    recorded here - see the note in `docs/stack-validation.md` for why a public repository
    is the wrong place for it.
 
+8. ~~**Staff password hashing on Workers.**~~ **Resolved 17 September 2026.** The
+   100,000-iteration cap is per `deriveBits` call, not on total work; six chained rounds
+   reach the 600,000 figure guidance asks for, measured at ~124 ms of CPU per login on the
+   deployed worker. PBKDF2 is still not memory-hard, and the stored format records its own
+   parameters so a memory-hard KDF can replace it without invalidating existing passwords.
+   One accepted trade-off is recorded in `docs/stack-validation.md`: login returns early
+   for unknown accounts, which leaks account existence by timing, because evening the
+   timing would let anonymous callers burn ~124 ms of CPU per request.
+
 ## Success and release criteria
 
 Demonstrate one ticket per original email under retries, correct reply threading, correct assignment, private internal notes, authenticated dashboard access, private attachment downloads, and calendar-correct reminders. Complete a real test mailbox round trip and a backup restore before production. No reliability or hosting claim is proven by this document alone.

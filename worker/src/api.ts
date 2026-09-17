@@ -102,6 +102,15 @@ export async function handleApi(url: URL, request: Request, env: Env): Promise<R
     // One message for every failure. Saying "no such user" would confirm which
     // accounts exist, and a different message for "no password set" would say
     // which are worth attacking.
+    //
+    // ACCEPTED TRADE-OFF (recorded in docs/stack-validation.md): an unknown
+    // account returns here WITHOUT running the KDF, so it answers in ~1 ms
+    // where a real account takes ~124 ms. That difference is a username
+    // enumeration oracle. Hashing a dummy value would even the timing, but it
+    // would also let any anonymous caller burn ~124 ms of CPU per request using
+    // random names, which the per-account throttle cannot catch. With accounts
+    // named staff1-staff5 there is nothing to enumerate, so the DoS vector
+    // matters more. Revisit if names ever become non-obvious.
     const rejected = Response.json({ error: "Incorrect name or password" }, { status: 401 });
 
     if (account === null || account.password_hash === null) {
