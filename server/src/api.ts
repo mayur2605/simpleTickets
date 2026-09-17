@@ -224,7 +224,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           message: buildLoginCode({
             code,
             recipient: to,
-            supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+            supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
             date: new Date(),
           }),
           envelopeFrom: env.config.gmailUser,
@@ -615,7 +615,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           ticketSubject: detail.ticket.subject,
           requester: detail.ticket.requester,
           participants,
-          supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+          supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
           body: text,
           // R14, from the session. A client that named somebody else would be
           // signing a colleague's name to its own message.
@@ -675,7 +675,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           ticketSubject: detail.ticket.subject,
           requester: detail.ticket.requester,
           participants,
-          supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+          supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
           body: text,
           // R14, from the session. A client that named somebody else would be
           // signing a colleague's name to its own message.

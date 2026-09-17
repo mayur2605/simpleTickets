@@ -137,11 +137,20 @@ wild, and turning sending on is a decision that needs naming a sender and recipi
 7. ~~**Decide the DMARC policy.**~~ **Closed as not applicable, 17 September 2026** — for
    this system, not for the domain.
 
-   DMARC would have mattered if SimpleTickets were claiming to be
-   `allcheckservices.com` in its From header, because then the domain would have to vouch
-   for whoever was sending. Following the decision in open point 5, it does not: outbound
-   mail is From a `gmail.com` address, sent by Gmail, and is therefore trivially aligned
-   for the domain it actually claims.
+   DMARC matters only if SimpleTickets claims to be `allcheckservices.com` in its From
+   header, because then the domain has to vouch for whoever is sending.
+
+   **It was doing exactly that, and inconsistently — found and fixed 17 September 2026.**
+   Acknowledgements went out From the Gmail account while every reply, resolution and
+   closure went out From `support@allcheckservices.com`, so one ticket showed the employee
+   two different senders and the official-looking one was the one most likely to be
+   filtered. Outgoing mail is now From the Gmail account everywhere, derived in
+   `config.fromAddress` rather than written at each call site, so there is one place to
+   change if the domain decision is ever reversed.
+
+   With that, outbound is From a `gmail.com` address sent by Gmail and is aligned for the
+   domain it actually claims — which is what makes this point closeable rather than merely
+   deferred.
 
    Inbound is unaffected either way. The forward passes SPF because the forwarder is the
    domain's own MX, which its record authorises via `+mx`.

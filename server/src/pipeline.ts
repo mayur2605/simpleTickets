@@ -168,7 +168,7 @@ async function noticeOversized(
     ticketNumber: ticket.id,
     ticketSubject: ticket.subject,
     requester: ticket.requester,
-    supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+    supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
     body: [
       `We received your message and opened ticket #${String(ticket.id)}, but some`,
       `of the attached files were too large. We accept ${megabytes} MB of`,
@@ -213,7 +213,7 @@ async function notify(
     ticketNumber: ticket.id,
     ticketSubject: ticket.subject,
     requester: ticket.requester,
-    supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+    supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
     dashboardUrl: env.config.dashboardUrl,
     recipient,
     date: new Date(),
@@ -581,7 +581,7 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
           ticketNumber: ticketId,
           originalSubject: message.subject,
           requester,
-          supportAddress: `SimpleTickets <${env.config.gmailUser}>`,
+          supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
           inboundMessageId: message.messageId,
           date: new Date(),
         });
@@ -733,7 +733,7 @@ export async function autoClose(env: AppContext, now: Date = new Date()): Promis
       ticketNumber: ticket.id,
       ticketSubject: ticket.subject,
       requester: ticket.requester,
-      supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+      supportAddress: `SimpleTickets <${env.config.fromAddress}>`,
       body: [
         `We are closing ticket #${String(ticket.id)}.`,
         "",
