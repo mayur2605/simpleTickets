@@ -20,7 +20,7 @@ closed with evidence:
 
 | Transport | Outcome |
 | --- | --- |
-| Zimbra IMAP (`mail.allcheckservices.com`) | Closed from Cloudflare — the mail host dropped that traffic on every port. Not retested from this machine; it may now work, and if it does it removes the Gmail hop entirely. |
+| Zimbra IMAP (`mail.allcheckservices.com`) | Closed from Cloudflare — the mail host dropped that traffic on every port. Never retested from this machine, and **not to be**: the standing instruction is to leave the `allcheckservices.com` domain and its mail server alone. The Gmail hop stays. |
 | Resend | Closed. Inbound worked; **outbound bounced** on `hostkarma.junkemailfilter.com`, with the sending IP clean on Spamhaus ZEN and SpamCop. Not ours to fix. |
 | Gmail API | Closed. `gmail.readonly` is a restricted scope, Publish App is disabled on the project, and an unpublished app expires its refresh token every 7 days. |
 | **Gmail IMAP + SMTP with an App Password** | **Accepted.** Real employee email became real tickets, real acknowledgements were accepted with Gmail queue ids, and a reply threaded onto its original ticket. |

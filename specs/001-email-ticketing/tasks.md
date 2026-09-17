@@ -36,10 +36,18 @@ A local prototype privacy regression was fixed and verified; see
 ## Phase 0 — Foundation and feasibility
 
 - [~] T001 Resolve open product questions from the PRD one at a time; update acceptance examples.
-  Five of the nine are resolved and recorded: backup storage and restore (1), sender
-  authentication and delivery (2), how mail reaches the mailbox (5), the sending transport
-  (6) and password hashing (8). **Four are still open and each needs a decision rather than
-  an implementation** — they are listed here so they can be answered one at a time:
+  Six of the nine are resolved and recorded: backup storage and restore (1), sender
+  authentication and delivery (2), how mail reaches the mailbox and what address replies
+  leave from (5), the sending transport (6), the DMARC policy (7, closed as not applicable)
+  and password hashing (8).
+  **Points 5 and 7 were settled on 17 September by one instruction: leave the
+  `allcheckservices.com` domain alone.** No DNS records, no SPF or DKIM, no mail
+  administrator, no direct use of the Zimbra server. Every route to sending as
+  `support@allcheckservices.com` needs at least one of those, so replies keep the Gmail
+  address — a decision rather than a deferral. DMARC follows: the system never claims to be
+  the domain in a From header, so there is nothing for the domain to vouch for.
+  **Three are still open and each needs a decision rather than an implementation** — they are
+  listed here so they can be answered one at a time:
   - **Open point 3.** What an employee reply should do to a transition whose required email
     has not yet been accepted. Today the reply reopens the ticket and the queued message
     goes out anyway, so an employee can receive "we are closing this" moments after writing
@@ -48,7 +56,6 @@ A local prototype privacy regression was fixed and verified; see
   - **Open point 4.** How to detect SMTP acceptance ambiguity. The `ambiguous` state and the
     resend path are built; what is missing is a rule for when a disconnect after DATA counts
     as acceptance.
-  - **Open point 7.** The DMARC policy. Deliberately not recorded in this public repository.
   - **Open point 9.** Where backups go off this machine. Blocked on hosting (T005), which is
     deliberately deferred — and worth saying plainly: backups currently sit on the same disk
     as the database, which is not a backup against losing that disk.

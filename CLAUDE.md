@@ -31,7 +31,7 @@ The full reasoning, the ported-versus-rewritten decision and the measured eviden
 - `server/` — the backend. Node, PostgreSQL, one process, its own gate.
 - `prototype/` — React 19 + TypeScript + Vite dashboard with Fluent UI v9. Built output is served by `server/`.
 - `prototype/src/domain/` — production domain rules, free of React, storage and transport. Business logic starts here, not in `main.tsx`. The server imports the business calendar from here on purpose: two implementations of the deadline rules would drift, and the UI would eventually show a different deadline from the one the system enforces.
-- `scripts/check-mail-tls.mjs` — unauthenticated Zimbra TLS probe. Worth re-running: it failed from Cloudflare because that host dropped Workers traffic, and that constraint is gone. If Zimbra IMAP is reachable from this machine, the Gmail hop disappears and PRD open point 5 with it.
+- `scripts/check-mail-tls.mjs` — unauthenticated Zimbra TLS probe, kept for the record. **Do not act on it without asking.** It failed from Cloudflare because that host dropped Workers traffic; the constraint is gone, but the standing instruction is to leave the `allcheckservices.com` domain and its mail server alone, so the Gmail hop stays. See PRD open point 5.
 - `tools/mail-check/` — interactive IMAP/SMTP authentication check, run by hand, its own package.
 - `.github/workflows/` — quality gates. Nothing deploys.
 
@@ -174,7 +174,7 @@ Beyond the obvious ticket routes:
 - Inbound: `support@allcheckservices.com` forwards to `simpleticketssupport@gmail.com` (a Zimbra user-level forward; no DNS change, no mail admin). SPF passes because the forwarder is the domain's MX and the record has `+mx`.
 - Outbound: Gmail SMTP on port 465 with the same App Password.
 - **`MAIL_SEND` is off unless it is exactly `on`.** Intents are still enqueued, claimed and rendered — everything except the wire. It is off by default because the usual reason to run this locally is to develop against the real mailbox, and a second acknowledgement for a ticket another system already answered lands in a real employee's inbox. It was turned on deliberately on 17 September 2026 for the acceptance run and **turned off again immediately afterwards**, which is the pattern to copy: switch on, run the thing you authorised, switch off. Never assume its current value from a document — ask `/status`. Before changing it in either direction, check the outbox has nothing pending: what is already queued is the entire risk of flipping that switch, and `/flush` returning `held: true` is how you confirm the gate is closed at runtime rather than only in config.
-- Replies still go out from the Gmail address. An employee who writes to the company address is answered by a `gmail.com` one. Needs Gmail "send as" or Workspace on the domain. PRD open point 5.
+- Replies go out from the Gmail address. An employee who writes to the company address is answered by a `gmail.com` one. **This is accepted**, because fixing it needs a change to the domain and the standing instruction is to leave the domain alone. The ticket number in the subject and the threading headers tie the conversation together regardless. PRD open point 5.
 
 ## Key constraints
 
@@ -283,8 +283,7 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 
 - **Sending is proved, with one honest limit.** On 17 September 2026 at 20:07 IST, with the user's explicit authorisation, `MAIL_SEND` was turned on and two messages composed by this server were accepted by Gmail with queue ids; R28 held against a real mail server. What a `250` does not prove is delivery downstream of Gmail — no bounce arrived, which is how a refusal appears, but inbox confirmation is the recipient's to give. Staff notifications and an inbound reply after an outbound message are still unexercised. See `docs/stack-validation.md`.
 - **Production hosting is undecided**, by choice.
-- **Replies go out from the Gmail address**, not the company one. PRD open point 5.
-- **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.
+- **Replies go out from the Gmail address**, not the company one — **decided, not outstanding.** The instruction is to leave the `allcheckservices.com` domain alone: no DNS records, no SPF/DKIM, no mail admin, no direct use of the Zimbra server. Every route to sending as the company address needs one of those, so this is the accepted state rather than a gap. PRD open point 5.
 - **Login leaks account existence by timing**, accepted and recorded — see `docs/stack-validation.md`.
 - What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity *detection* (open point 4 — the `ambiguous` state and the resend path exist; the detection rule does not).
 - **Backups sit on the same disk as the database.** That is not a backup against losing the disk. An off-machine copy waits on the hosting decision (PRD open point 9).

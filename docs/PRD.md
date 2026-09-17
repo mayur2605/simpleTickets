@@ -111,17 +111,45 @@ wild, and turning sending on is a decision that needs naming a sender and recipi
    arrived in INBOX rather than spam (SPF passes because the forwarder is the domain's own
    MX, which the record authorises via `+mx`), and the original sender was preserved, so
    tickets are filed against the employee and not the support mailbox. Employees keep the
-   address they already know. **Outbound identity is still open:** replies leave as the
-   Gmail address, which needs Gmail "send as" or Workspace on the domain.
+   address they already know.
+
+   **Outbound identity: decided 17 September 2026 — replies keep the Gmail address.** The
+   user's instruction is to leave the `allcheckservices.com` domain alone: no DNS records,
+   no SPF or DKIM additions, no mail-administrator involvement, and no direct use of the
+   Zimbra mail server. Every route to sending *as* `support@allcheckservices.com` requires
+   at least one of those, so none of them is available and this stops being an open
+   question.
+
+   What that accepts: an employee writes to the company address and is answered by
+   `simpleticketssupport@gmail.com`. The ticket number in the subject and the threading
+   headers do the work of tying the conversation together, so nothing breaks — it simply
+   looks less official than it could.
+
+   Revisit only if the domain constraint is lifted. The cheapest route then is Gmail's
+   "send mail as", which needs no DNS change and verifies through the forward that already
+   exists; the cleanest is Zimbra SMTP directly, which would remove the Gmail hop entirely.
 
 6. ~~**Choose a sending transport.**~~ **Resolved 17 September 2026: Gmail SMTP**, port
    465 with the App Password already used for ingestion. The outbound module, the durable
    outbox, retry/backoff, permanence classification and R28 delivery gating are all built
    and tested. The From address remains open point 5.
 
-7. **Decide the DMARC policy.** Open. What the domain publishes today is deliberately not
-   recorded here - see the note in `docs/stack-validation.md` for why a public repository
-   is the wrong place for it.
+7. ~~**Decide the DMARC policy.**~~ **Closed as not applicable, 17 September 2026** — for
+   this system, not for the domain.
+
+   DMARC would have mattered if SimpleTickets were claiming to be
+   `allcheckservices.com` in its From header, because then the domain would have to vouch
+   for whoever was sending. Following the decision in open point 5, it does not: outbound
+   mail is From a `gmail.com` address, sent by Gmail, and is therefore trivially aligned
+   for the domain it actually claims.
+
+   Inbound is unaffected either way. The forward passes SPF because the forwarder is the
+   domain's own MX, which its record authorises via `+mx`.
+
+   What the domain publishes today remains deliberately unrecorded here - see the note in
+   `docs/stack-validation.md` for why a public repository is the wrong place for it. That
+   is a posture question for whoever runs the domain, and no longer one this project is
+   waiting on.
 
 8. ~~**Staff password hashing.**~~ **Resolved 17 September 2026, and then improved.** The
    Workers workaround — six chained PBKDF2 rounds to reach 600,000 iterations past a
