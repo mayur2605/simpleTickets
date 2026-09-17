@@ -91,7 +91,10 @@ wild, and turning sending on is a decision that needs naming a sender and recipi
    production.
 2. ~~Verify trusted sender authentication, delivery and origin compatibility.~~
    **Resolved 17 September 2026.** Real employee email became real tickets and real
-   acknowledgements were accepted with Gmail queue ids. The Cloudflare-origin constraint
+   acknowledgements were accepted with Gmail queue ids — and at 20:07 IST the same was
+   proved from THIS stack, not inherited: a reply composed by the local Node server was
+   accepted by Gmail over `node:tls`, and a Resolved transition was shown to wait for that
+   acceptance before taking effect. The Cloudflare-origin constraint
    that forced Gmail is gone with Cloudflare, which is now deleted entirely — Zimbra IMAP
    may well be reachable from this machine, which would remove the Gmail hop and open
    point 5 with it. `scripts/check-mail-tls.mjs` is the probe. Untested; worth an hour.

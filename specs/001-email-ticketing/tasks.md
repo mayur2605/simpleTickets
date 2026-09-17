@@ -23,10 +23,12 @@ deployment and rollback.
 removed on 17 September 2026 once ingestion was proved locally against the same mailbox.
 There is no deployment to fall back to, and no cloud resource of any kind remains.
 
-**Sending is still inherited.** `MAIL_SEND` has never been on here, so every claim below
-about a message reaching a person comes from the Cloudflare deployment. The outbox composes
-and queues correctly and reports `held: true`; no SMTP connection has been opened from this
-machine.
+**Sending is proved here too, as of 17 September 2026 at 20:07 IST.** With the user's
+explicit authorisation, `MAIL_SEND` was turned on and a public reply composed by this server
+was accepted by Gmail with a queue id; a Resolved transition was then proved to wait for that
+acceptance and to anchor the 72-hour clock to it. See `docs/stack-validation.md`. What a
+`250` does not prove is delivery downstream of Gmail — no bounce arrived, which is how a
+refusal would appear, but inbox confirmation belongs to the recipient.
 
 A local prototype privacy regression was fixed and verified; see
 [takeover review](../../docs/takeover-review.md).
@@ -57,16 +59,18 @@ A local prototype privacy regression was fixed and verified; see
   through all of them. Installing the tool now would reformat documents that are working in
   order to gain a generator nobody has asked for. This needs a decision on whether it is
   still wanted before it needs an installation.
-- [~] T003 Prove test-mailbox IMAP/SMTP round trip from candidate runtime; record TLS, routing and compatibility findings without secrets.
+- [x] T003 Prove test-mailbox IMAP/SMTP round trip from candidate runtime; record TLS, routing and compatibility findings without secrets.
   **IMAP is proved on this runtime.** An empty database pointed at the live mailbox on
   17 September rebuilt the same tickets, threaded the reply and rejected three unapproved
   senders. TLS, routing and compatibility findings are in `docs/stack-validation.md`, with
   no secrets — the credential is prompted for or read from a git-ignored `.env`, never
   passed as an argument.
-  **SMTP is not.** `MAIL_SEND` has never been on here, so no message composed by this server
-  has reached the wire. This is the same blocker as T025 and needs the same thing: explicit
-  authorisation naming the sender and the recipients, against a test mailbox rather than the
-  live support address.
+  **SMTP is proved too, 17 September 2026 at 20:07 IST**, with the user's explicit
+  authorisation and against their own work address — the only requester in the database. Two
+  messages composed by this server were accepted by Gmail with queue ids. TLS on port 465,
+  authentication with the App Password, the full dialogue through DATA, over `node:tls`.
+  Recorded in `docs/stack-validation.md` with the preconditions that made it safe to run:
+  an empty outbox, a checkpoint caught up with the mailbox, and the ticker stopped first.
   Worth doing first: re-run `scripts/check-mail-tls.mjs`. Zimbra IMAP was ruled out because
   the mail host dropped Cloudflare's traffic, and that constraint died with Cloudflare. If
   Zimbra is reachable from this machine the Gmail hop disappears and PRD open point 5 goes
@@ -520,10 +524,16 @@ A local prototype privacy regression was fixed and verified; see
   against its evidence, and distinguishes three things the word "done" hides — proved on this
   stack, asserted by the suite, and inherited from the Cloudflare deployment. It ends with the
   seven requirements that are not fully met, in one place.
-  **The acceptance run has not happened**, and cannot until `MAIL_SEND` is turned on against a
-  test mailbox that is not the live support address, with explicit authorisation naming the
-  sender and the recipients. Every "Tested" rather than "Proved here" in that document for
-  anything outbound is limited by exactly that. Inbound is proved.
+  **The acceptance run happened on 17 September 2026 at 20:07 IST**, with the user's explicit
+  authorisation. `MAIL_SEND` on; a reply composed in the dashboard accepted by Gmail; R28
+  proved against a real mail server — status held at New while the resolution was pending,
+  Resolved only on the `250`, and the auto-close clock anchored to the acceptance three
+  seconds after the request rather than to the button press.
+  **What the run does not cover**, and why: a Gmail `250` is Gmail taking responsibility,
+  not `allcheckservices.com` accepting downstream - no bounce arrived, which is how a refusal
+  appears, but inbox confirmation is the recipient's to give. Staff notifications were not
+  exercised because the seeded addresses are `staff1..5@allcheckservices.com` placeholders.
+  And an employee reply arriving after an outbound message needs a person to press reply.
 - [~] T026 Prepare deployment and rollback instructions with concrete hosting costs and limitations for review.
   Written: `docs/operations.md` has what it needs (Node 24, PostgreSQL 18 with matching
   client binaries, outbound 993 and 465, TLS because the session cookie is Secure, process

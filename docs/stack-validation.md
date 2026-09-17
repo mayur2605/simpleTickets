@@ -12,7 +12,7 @@ be wrong, because the wrongness is part of the record. For what is true today, r
 | Stack | Node 24 + PostgreSQL 18 + local disk, one process, no cloud dependency |
 | Cloudflare | **Deleted.** Worker, D1 database and the `worker/` source are all gone |
 | Ingestion | **Proved on this stack** — empty database rebuilt the same tickets from the live mailbox |
-| Sending | **Not proved here.** `MAIL_SEND` has never been on; nothing has left this machine |
+| Sending | **Proved on this stack, 17 September 2026, 20:07 IST.** See "Sending, proved" below |
 | Tests | 258 unit + 176 integration (PostgreSQL) on the server, 19 + a browser smoke run on the prototype — repeated on Firefox and WebKit in their own CI job |
 
 **Measured on this stack, 17 September 2026** (all four run in the gate, so they cannot go
@@ -28,6 +28,77 @@ stale silently):
 These close what T004 asked for. The "free runtime limits" that task was written against were
 Cloudflare's — a 100,000-iteration PBKDF2 cap, a per-request CPU budget, and a frozen
 `Date.now()` that made any in-request timing read zero. All three died with Cloudflare.
+
+## Sending, proved — 17 September 2026, 20:07 IST
+
+The last unproven claim. `MAIL_SEND` had never been on here, so no message composed by this
+server had ever reached the wire; everything outbound was inherited evidence from the
+Cloudflare deployment. Run with the user's explicit authorisation, against the only
+requester address in the database — `mayur.kulkarni@allcheckservices.com`, the authorising
+user's own work address.
+
+**Preconditions checked before the switch was flipped**, because the risk of turning this on
+is entirely in what is already queued:
+
+| | |
+| --- | --- |
+| Outbox | 0 pending, 0 sending. The only two rows were `accepted` acknowledgements imported from D1 |
+| Checkpoint | `lastUid 12` against the mailbox's `uidNext 13` — caught up, nothing waiting to be ingested |
+| Requesters in the database | one address, the authorising user's |
+| Ticker | stopped first, so nothing could flush while the configuration changed |
+
+Turning `MAIL_SEND=on` and restarting therefore sent nothing by itself, which the startup
+tick confirmed: `outbox {pending: 0, sending: 0, accepted: 2}` unchanged.
+
+### A public reply left the machine
+
+Driven through the real API — sign in, `POST /api/tickets/7/reply`, `POST /flush` — rather
+than by calling the store, because the path and the authorisation on it are part of what was
+being tested.
+
+```
+flush: {"sent":1,"deferred":0,"failed":0,"parked":0}
+
+outbox #4  reply → mayur.kulkarni@allcheckservices.com
+           state=accepted  accepted_at=2026-09-17T14:37:04.074Z
+           250 2.0.0 OK  1789655823 af79cd13be357-93b780cfa78sm465566285a.2 - gsmtp
+```
+
+A Gmail queue id, for a message this Node process composed and put on a `node:tls` socket.
+
+### R28 held against a real mail server
+
+The architecturally distinctive claim, and until now only ever tested against a scripted
+fake that supplied its own acceptance. Ticket 8, asked to become Resolved:
+
+| Observation | Result |
+| --- | --- |
+| Immediately after the request | status **New** — unchanged, which is correct; 1 pending delivery, `#5 resolution → Resolved` |
+| After the flush | status **Resolved**; 0 pending |
+| SMTP | `250 2.0.0 OK 1789655844 af79cd13be357-93b7821d114sm483162085a.19 - gsmtp` |
+| Requested at | `2026-09-17T14:37:21.906Z` |
+| **Anchored at** | `2026-09-17T14:37:24.929Z` |
+
+The three-second gap is the whole of R28. The auto-close clock runs from the acceptance, not
+from the button press, so the ticket would close at `2026-09-20T14:37:24.929Z` — and a
+resolution that never sent would never start the clock at all.
+
+### What this does and does not prove
+
+**Proved:** this server composes a message, opens a TLS connection to Gmail, completes the
+SMTP dialogue, and records the acceptance with its queue id; and a status change gated on
+that acceptance applies only when it arrives, in the same transaction.
+
+**Not proved by the `250` alone:** delivery to the recipient's inbox. Gmail accepting a
+message means Gmail has taken responsibility for it, not that `allcheckservices.com`
+accepted it downstream. No bounce had arrived when this was written — the mailbox was still
+at `uidNext 13` — and a bounce is how a downstream refusal would appear, so the absence is
+evidence, but it is early evidence. Inbox confirmation is the authorising user's to give.
+
+**Still not exercised by this run:** notifications to staff, which go to the seeded
+`staff1..5@allcheckservices.com` placeholders rather than real mailboxes; and an employee
+reply arriving back onto a ticket after an outbound message, which needs a person to press
+reply.
 
 Everything below is the history that produced those conclusions, beginning 16 September 2026.
 

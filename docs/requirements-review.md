@@ -13,6 +13,11 @@ Three columns of honesty are worth naming before the table, because the word
 - **Inherited** — it worked on the Cloudflare deployment and the code was ported.
   That is evidence about the old system, not this one.
 
+**Updated 17 September 2026, 20:07 IST: sending is now proved here.** A reply and a
+delivery-gated resolution both left this machine and were accepted by Gmail with
+queue ids, and R28 held against a real mail server. The rows below are revised
+accordingly; `docs/stack-validation.md` has the run.
+
 The gate behind all of it: **258 unit tests and 176 against real PostgreSQL** in
 `server/`, **19 unit tests plus a browser smoke run and a production build** in
 `prototype/`, with the same smoke run repeated on Firefox and WebKit in their own CI job. Re-run it rather than trusting this sentence.
@@ -34,8 +39,8 @@ The gate behind all of it: **258 unit tests and 176 against real PostgreSQL** in
 | **R11** | Four priorities, same deadline | **Tested** | Default Normal; the deadline calculation does not read priority. |
 | **R12** | 5 MB of attachments per email; oversized asks for smaller files | **Tested** | The budget is enforced on bytes actually READ, not on the sizes the sender's structure claims. The employee is told which files did not arrive, once per ticket. Storing and reading 5 MB measured at 6 ms and 2 ms. The sender's filename never becomes a path. |
 | **R13** | Internal notes never emailed, never an IT response | **Structural** | `addNote` contains no outbox statement and `notification.ts` has no parameter through which note text could arrive. Asserted with participants on the ticket: a note queues nothing at all. |
-| **R14** | Replies composed in the dashboard, sent from the support address | **Partly** | Composed and queued correctly, with participants copied in header and envelope, and signed with the responding staff member's name — taken from the session, so a client cannot sign a colleague's name to its own message. The signature is on the wire and not in the ticket history, where the author column already says who wrote it. **One gap:** replies go out from the Gmail address rather than the company one (PRD open point 5). |
-| **R15** | Notify the assignee on assignment, reply and overdue | **Tested** | Four kinds, each linking to the ticket. Message-IDs carry a random component after a timestamp alone collided and the UNIQUE constraint silently dropped every recipient after the first. **Not delivered to a person:** `MAIL_SEND` has never been on here. |
+| **R14** | Replies composed in the dashboard, sent from the support address | **Proved here** | A reply composed in the dashboard reached Gmail and was accepted (`250 … gsmtp`). Participants are copied in header and envelope, and it is signed with the responding staff member's name — taken from the session, so a client cannot sign a colleague's name to its own message. The signature is on the wire and not in the ticket history, where the author column already says who wrote it. **One gap:** replies go out from the Gmail address rather than the company one (PRD open point 5). |
+| **R15** | Notify the assignee on assignment, reply and overdue | **Tested** | Four kinds, each linking to the ticket. Message-IDs carry a random component after a timestamp alone collided and the UNIQUE constraint silently dropped every recipient after the first. Sending now works on this stack, but **no notification specifically has been delivered**: the seeded staff addresses are `staff1..5@allcheckservices.com` placeholders, not real mailboxes. |
 | **R16** | Four working hours for the first response and for later employee messages | **Tested** | 19 calendar cases, plus 12 on episodes. "Answered" is per episode: the earliest outbound message after the most recent inbound one. A new employee message sets a new deadline only when IT replied since the last one — a follow-up while a response is already owed leaves the existing deadline alone, or an anxious employee writing three times pushes their own deadline out each time. |
 | **R17** | Mon–Sat 09:00–18:00 IST; Sunday due Monday noon | **Tested** | One business-calendar module, imported by the server from the prototype rather than copied — two implementations would drift and the UI would show a deadline the system does not enforce. |
 | **R18** | Overdue reminders every four working hours to assignee and admin | **Tested** | Business time, not elapsed: a reminder every four clock hours would send four overnight to nobody reading. Recipients deduplicated, so an admin who is also the assignee is told once. |
@@ -48,26 +53,37 @@ The gate behind all of it: **258 unit tests and 176 against real PostgreSQL** in
 | **R25** | CC participants on the exact company domain | **Tested** | Domain filtering, quoted-display-name splitting, requester-only additions by email, explicit-only removal, participant replies accepted and unrelated same-domain senders refused and recorded. Copied in header and envelope both. |
 | **R26** | Daily backup at 02:00 IST, 30 days, database and attachments | **Proved here** | Both halves taken on demand against the live database and storage directory. The restore is exercised by the gate: dump and archive taken, database and files destroyed, both restored, and the restored database checked to still accept a new ticket — identity sequences are where a restore usually looks fine and is not. |
 | **R27** | Launch cutoff; no pre-launch mail; mailbox unchanged | **Proved here** | The rebuild exercised it: the one extra ticket against the old deployment was the message D1's cutoff had excluded. The mailbox is opened read-only at every call site, so nothing is marked seen. |
-| **R28** | Delivery-gated transitions | **Tested** | The acceptance and any waiting transition commit in one transaction. Held transitions are visible on the ticket, which matters — pressing Resolve and seeing "New" is correct and reads as a fault. A template-mapped transition is gated identically. |
+| **R28** | Delivery-gated transitions | **Proved here** | Exercised against Gmail on 17 September: status stayed New while the resolution was pending, became Resolved only on the `250`, and the auto-close clock anchored to the acceptance three seconds after the request. The acceptance and any waiting transition commit in one transaction. Held transitions are visible on the ticket, which matters — pressing Resolve and seeing "New" is correct and reads as a fault. A template-mapped transition is gated identically. |
 
 ---
 
-## What T025 asks for and this is not
+## What T025 asks for, and what was actually run
 
-T025 says "run end-to-end acceptance with test accounts and mailbox". This is the
-requirement review half. The other half — a full pass with mail actually leaving
-the machine — has not been run, because **`MAIL_SEND` has never been on on this
-stack**. Every row above that says "Tested" rather than "Proved here" for
-anything outbound is limited by exactly that.
+T025 says "run end-to-end acceptance with test accounts and mailbox; review all
+PRD requirements R01–R28 against results". Both halves have now happened, with
+one honest limit.
 
-Running it needs explicit authorisation naming the sender and the recipients, and
-a test mailbox that is not the live support address. Until then the honest
-summary is:
+**The review** is the table above.
 
-- **Inbound is proved.** An empty database pointed at the live mailbox rebuilt
-  the same tickets, threaded the same reply, and rejected the same senders.
-- **Outbound is composed, queued, rendered and held.** The SMTP module is ported
-  and unit tested; no message composed by this server has reached a person.
+**The run**, on 17 September 2026 at 20:07 IST with the user's explicit
+authorisation: `MAIL_SEND` on, a public reply sent through the dashboard API and
+accepted by Gmail, and a Resolved transition proved to wait for that acceptance.
+The recipient was the authorising user's own work address, which was also the
+only requester address in the database. Preconditions and results in
+`docs/stack-validation.md`.
+
+**The limit.** A Gmail `250` means Gmail has taken responsibility for the
+message, not that `allcheckservices.com` accepted it downstream. No bounce had
+arrived, which is how a downstream refusal appears — but inbox confirmation is
+the recipient's to give, not something this system can assert about itself.
+
+Two paths remain unexercised by a real send, and neither is blocked on anything
+but circumstance:
+
+- **Staff notifications.** The seeded addresses are `staff1..5@allcheckservices.com`
+  placeholders. Pointing one at a real mailbox would exercise it.
+- **An employee reply arriving after an outbound message**, which threads onto
+  the ticket and restarts the response clock. That needs a person to press reply.
 
 ## Requirements not fully met, in one place
 

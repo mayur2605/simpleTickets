@@ -173,7 +173,7 @@ Beyond the obvious ticket routes:
 
 - Inbound: `support@allcheckservices.com` forwards to `simpleticketssupport@gmail.com` (a Zimbra user-level forward; no DNS change, no mail admin). SPF passes because the forwarder is the domain's MX and the record has `+mx`.
 - Outbound: Gmail SMTP on port 465 with the same App Password.
-- **`MAIL_SEND` is off unless it is exactly `on`.** Intents are still enqueued, claimed and rendered — everything except the wire. It is off by default because the usual reason to run this locally is to develop against the real mailbox, and a second acknowledgement for a ticket another system already answered lands in a real employee's inbox.
+- **`MAIL_SEND` is off unless it is exactly `on`.** Intents are still enqueued, claimed and rendered — everything except the wire. It is off by default because the usual reason to run this locally is to develop against the real mailbox, and a second acknowledgement for a ticket another system already answered lands in a real employee's inbox. **It was turned on deliberately on 17 September 2026**; check `/status` before assuming its current value, and check the outbox has nothing pending before changing it — what is already queued is the entire risk of flipping that switch.
 - Replies still go out from the Gmail address. An employee who writes to the company address is answered by a `gmail.com` one. Needs Gmail "send as" or Workspace on the domain. PRD open point 5.
 
 ## Key constraints
@@ -281,7 +281,7 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 
 ## Unresolved
 
-- **Sending has not been proved on this stack.** Ingestion has — an empty database pointed at the live mailbox rebuilt the same tickets on 17 September 2026 (see `docs/stack-validation.md`). But `MAIL_SEND` has never been on here, so no message composed by this server has reached a person. The SMTP module is ported and unit tested; that is not the same thing.
+- **Sending is proved, with one honest limit.** On 17 September 2026 at 20:07 IST, with the user's explicit authorisation, `MAIL_SEND` was turned on and two messages composed by this server were accepted by Gmail with queue ids; R28 held against a real mail server. What a `250` does not prove is delivery downstream of Gmail — no bounce arrived, which is how a refusal appears, but inbox confirmation is the recipient's to give. Staff notifications and an inbound reply after an outbound message are still unexercised. See `docs/stack-validation.md`.
 - **Production hosting is undecided**, by choice.
 - **Replies go out from the Gmail address**, not the company one. PRD open point 5.
 - **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.

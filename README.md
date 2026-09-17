@@ -22,8 +22,10 @@ why, and [validation evidence](docs/stack-validation.md) for the measurements.
 
 Ingestion is proved: on 17 September 2026 an empty database pointed at the live mailbox
 independently rebuilt the same tickets the previous deployment held, including the threaded
-reply. **Sending is not** — `MAIL_SEND` has never been on here, so nothing this server
-composes has reached a person yet.
+reply. **Sending is proved too**, later the same day — a reply composed in the dashboard was
+accepted by Gmail with a queue id, and a Resolved transition was shown to wait for that
+acceptance before taking effect (R28). What a `250` does not prove is delivery downstream of
+Gmail; no bounce arrived, but inbox confirmation belongs to the recipient.
 
 Where every requirement actually stands is in
 [the requirement review](docs/requirements-review.md), which separates what is proved on
