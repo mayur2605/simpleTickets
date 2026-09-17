@@ -383,7 +383,11 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       // Request bodies are an external boundary: validate, never cast.
       const payload = await readJson(request);
       const body = payload["body"];
-      if (ticketMatch[2] !== "/assign" && (typeof body !== "string" || body.trim().length === 0)) {
+      // Only the routes that actually SEND something need a message. Assigning
+      // and editing the participant list do not, and demanding one made both
+      // answer 400 to a perfectly well-formed request.
+      const needsMessage = ticketMatch[2] !== "/assign" && ticketMatch[2] !== "/participants";
+      if (needsMessage && (typeof body !== "string" || body.trim().length === 0)) {
         return Response.json({ error: "A body is required" }, { status: 400 });
       }
       const text = typeof body === "string" ? body : "";

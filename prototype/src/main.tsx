@@ -27,7 +27,11 @@ import {
   Mail24Regular,
   ArrowLeft20Regular,
   Add20Regular,
+  Delete20Regular,
+  Dismiss12Regular,
   CheckmarkCircle20Regular,
+  Warning20Regular,
+  Attach20Regular,
   Clock24Regular,
   ArrowTrendingLines24Regular,
   PersonClock24Regular,
@@ -43,10 +47,26 @@ import {
   logout as apiLogout,
   fetchTickets,
   fetchTicket,
+  fetchStaff,
+  fetchTemplates,
+  saveTemplate,
+  deleteTemplate as apiDeleteTemplate,
   sendReply,
   addNote as postNote,
+  setStatus as apiSetStatus,
+  assign as apiAssign,
+  addParticipants as apiAddParticipants,
+  removeParticipant as apiRemoveParticipant,
+  setStaffFlag,
+  resend as apiResend,
+  attachmentUrl,
   NotSignedIn,
   type ApiTicket,
+  type ApiStaff,
+  type ApiParticipant,
+  type ApiAudit,
+  type ApiPending,
+  type ApiAttachment,
   type Identity,
 } from "./api";
 type Ticket = {
@@ -168,7 +188,14 @@ const seed: Ticket[] = [
     body: "The password reset is complete and the workstation is accessible again.",
   },
 ];
-const initialTemplates = [
+/**
+ * Sample templates, used when no backend answers. The live ones come from
+ * /api/templates and carry an `id`; these do not, which is what tells the save
+ * handler whether it is talking to a server or to this array.
+ */
+type Template = { id?: number; name: string; status: string; body: string };
+
+const initialTemplates: Template[] = [
   {
     name: "Working on it",
     status: "In Progress",
@@ -313,7 +340,20 @@ function App() {
     [editing, setEditing] = useState(-1),
     [name, setName] = useState(""),
     [body, setBody] = useState(""),
-    [templateStatus, setTemplateStatus] = useState("No change");
+    [templateStatus, setTemplateStatus] = useState("No change"),
+    // Which template is selected in the composer, so the server can apply its
+    // status mapping (R24). -1 is "none"; selecting one never changes status
+    // on its own, only sending does.
+    [chosenTemplate, setChosenTemplate] = useState(-1),
+    // The live ticket's supporting detail. Empty in sample mode, where there
+    // is no server to have any.
+    [team, setTeam] = useState<ApiStaff[]>([]),
+    [participants, setParticipants] = useState<ApiParticipant[]>([]),
+    [audit, setAudit] = useState<ApiAudit[]>([]),
+    [pending, setPending] = useState<ApiPending[]>([]),
+    [attachments, setAttachments] = useState<ApiAttachment[]>([]),
+    [newParticipant, setNewParticipant] = useState(""),
+    [busy, setBusy] = useState(false);
 
   // Ask the server who we are before anything else. Three outcomes: no server
   // (sample data), a server and a session (real tickets), or a server and no
@@ -356,6 +396,33 @@ function App() {
       cancelled = true;
     };
   }, [live, identity]);
+  // Templates and the team, once. Both are shared state that changes rarely,
+  // and both fall back to the sample arrays when no server answers.
+  useEffect(() => {
+    if (!live || identity === null) return;
+    let cancelled = false;
+    void Promise.all([fetchTemplates(), fetchStaff()])
+      .then(([saved, people]) => {
+        if (cancelled) return;
+        setTemplates(
+          saved.map((t) => ({
+            id: t.id,
+            name: t.name,
+            body: t.body,
+            status: t.maps_to ?? "No change",
+          })),
+        );
+        setTeam(people);
+      })
+      .catch(() => {
+        // Not fatal: the queue is what matters, and a failure here leaves the
+        // sample templates rather than an empty picker.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [live, identity]);
+
   // A live ticket's history comes from the server. Without this the detail
   // view would show the in-memory sample conversation beside a real ticket,
   // which is the worst of both: it looks like data and is not.
@@ -374,6 +441,10 @@ function App() {
             inbound: m.direction === "inbound",
           })),
         }));
+        setParticipants(result.participants);
+        setAudit(result.audit);
+        setPending(result.pending);
+        setAttachments(result.attachments);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -388,12 +459,173 @@ function App() {
     };
   }, [live, identity, selected]);
 
+  /**
+   * Re-read the ticket and the queue after a write.
+   *
+   * Never patched locally, because the server decides what actually happened:
+   * under R28 a status change rides on the message that justifies it, so
+   * optimistically showing "Resolved" would be wrong until the mail server
+   * accepts it - which it may never do.
+   */
+  async function refresh(ticketId: number): Promise<void> {
+    const [detail, list] = await Promise.all([
+      fetchTicket(ticketId),
+      fetchTickets(),
+    ]);
+    setMessages((previous) => ({
+      ...previous,
+      [ticketId]: detail.messages.map((m) => ({
+        text: m.body,
+        note: m.direction === "note",
+        author: m.author,
+        inbound: m.direction === "inbound",
+      })),
+    }));
+    setParticipants(detail.participants);
+    setAudit(detail.audit);
+    setPending(detail.pending);
+    setAttachments(detail.attachments);
+    setTickets(list.tickets.map(fromApi));
+  }
+
+  /**
+   * Save the template list.
+   *
+   * In sample mode this is the array and nothing else — the smoke test and any
+   * design review depend on that still working with no server. Live, the server
+   * is the record and the local list is refreshed from it afterwards, so a
+   * refused write cannot leave the screen showing something that was not saved.
+   */
+  function saveTemplates(
+    next: Template[],
+    write:
+      | {
+          save: {
+            id?: number;
+            name: string;
+            body: string;
+            mapsTo: string | null;
+          };
+        }
+      | { deleteId: number }
+      | null,
+  ) {
+    setEditing(-1);
+    if (!live || write === null) {
+      setTemplates(next);
+      setNotice("Template saved for this preview.");
+      return;
+    }
+    setBusy(true);
+    void (
+      "save" in write
+        ? saveTemplate(write.save)
+        : apiDeleteTemplate(write.deleteId)
+    )
+      .then(fetchTemplates)
+      .then((saved) => {
+        setTemplates(
+          saved.map((t) => ({
+            id: t.id,
+            name: t.name,
+            body: t.body,
+            status: t.maps_to ?? "No change",
+          })),
+        );
+        setNotice(
+          "save" in write
+            ? "Template saved. Messages already sent are unchanged."
+            : "Template deleted. Messages already sent are unchanged.",
+        );
+      })
+      .catch((error: unknown) => {
+        setNotice(
+          `Not saved: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  }
+
+  /**
+   * Change a staff member's availability or account access (R24).
+   *
+   * Re-reads the whole queue afterwards, not just the team: marking someone
+   * unavailable moves their open tickets, so the list on screen is stale the
+   * moment this returns.
+   */
+  function changeStaff(
+    who: string,
+    flag: { available: boolean } | { enabled: boolean },
+  ) {
+    setBusy(true);
+    void setStaffFlag(who, flag)
+      .then(async () => {
+        const [people, list] = await Promise.all([
+          fetchStaff(),
+          fetchTickets(),
+        ]);
+        setTeam(people);
+        setTickets(list.tickets.map(fromApi));
+        setNotice(
+          "available" in flag
+            ? flag.available
+              ? `${who} is available again. Unassigned tickets have been shared out.`
+              : `${who} is unavailable. Their open tickets have moved and the new owners were told.`
+            : flag.enabled
+              ? `${who} can sign in again. Their old tickets stayed where they were moved.`
+              : `${who}'s account is disabled. They are signed out and their open tickets have moved.`,
+        );
+      })
+      .catch((error: unknown) => {
+        setNotice(
+          `Not saved: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  }
+
+  /** Run a write, report what went wrong, and never leave the UI stuck busy. */
+  function act(ticketId: number, work: () => Promise<void>, done: string) {
+    setBusy(true);
+    void work()
+      .then(() => refresh(ticketId))
+      .then(() => {
+        setNotice(done);
+      })
+      .catch((error: unknown) => {
+        setNotice(
+          `Not saved: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+      .finally(() => {
+        setBusy(false);
+      });
+  }
+
   // The person the dashboard is acting as. In sample mode there is no session,
   // so the first sample name stands in - it is a demo, and it says so.
   const me = identity?.name ?? staff[0];
   const draft = note ? noteDraft : replyDraft;
   const setDraft = note ? setNoteDraft : setReplyDraft;
   const current = tickets.find((t) => t.id === selected);
+  // Real staff names once a server answers, the sample five otherwise. An
+  // unavailable or disabled colleague is still listed: a ticket can be handed
+  // to somebody on leave deliberately, it just is not handed to them
+  // automatically.
+  const owners = live && team.length > 0 ? team.map((s) => s.name) : [...staff];
+  const onTicket = participants.filter((person) => person.removed_at === null);
+  // R28: outgoing mail this ticket is still waiting on, and anything that
+  // failed. Pressing Resolve and seeing "New" is correct and looks broken.
+  const waiting = pending.filter(
+    (item) => item.state === "pending" || item.state === "sending",
+  );
+  const stuck = pending.filter(
+    (item) => item.state !== "pending" && item.state !== "sending",
+  );
   const open = tickets.filter(
     (t) => !["Resolved", "Closed"].includes(t.status),
   );
@@ -420,37 +652,33 @@ function App() {
       const ticketId = current.id;
       const text = draft;
       const isNote = note;
+      // The selected template's id, so the server applies its status mapping.
+      // The BODY is whatever is on screen: R24 lets staff edit a selected reply
+      // before sending, and that edit must reach the employee.
+      const templateId = templates[chosenTemplate]?.id;
+      // A status the user picked by hand, which the template picker clears.
+      // Three shapes of send, and the server decides what each means:
+      //   a note, which never touches the outbox;
+      //   a template, whose mapping the server reads from the saved row;
+      //   a status change, which is delivery-gated (R28).
+      const wanted = target === current.status ? null : target;
       setDraft("");
+      setChosenTemplate(-1);
       setNotice(isNote ? "Adding note..." : "Queueing reply...");
-      void (isNote ? postNote(ticketId, text) : sendReply(ticketId, text))
-        .then(async () => {
-          // Re-read rather than patching local state: the server decides what
-          // actually happened, including whether a status moved at all.
-          const [detail, list] = await Promise.all([
-            fetchTicket(ticketId),
-            fetchTickets(),
-          ]);
-          setMessages((previous) => ({
-            ...previous,
-            [ticketId]: detail.messages.map((m) => ({
-              text: m.body,
-              note: m.direction === "note",
-              author: m.author,
-              inbound: m.direction === "inbound",
-            })),
-          }));
-          setTickets(list.tickets.map(fromApi));
-          setNotice(
-            isNote
-              ? "Internal note added. It is never emailed to the employee."
-              : "Reply queued. It is sent on the next poll, within two minutes.",
-          );
-        })
-        .catch((error: unknown) => {
-          setNotice(
-            `Not saved: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+      act(
+        ticketId,
+        () =>
+          isNote
+            ? postNote(ticketId, text)
+            : templateId === undefined && wanted !== null
+              ? apiSetStatus(ticketId, wanted, text)
+              : sendReply(ticketId, text, templateId),
+        isNote
+          ? "Internal note added. It is never emailed to the employee."
+          : wanted === null
+            ? "Reply queued. It is sent on the next poll, within two minutes."
+            : `Reply queued. The ticket becomes ${wanted} when the mail server accepts it.`,
+      );
       return;
     }
 
@@ -646,6 +874,40 @@ function App() {
                     <h1>{current.title}</h1>
                     <Status value={current.status} />
                   </div>
+                  {waiting.length > 0 && (
+                    <div className="notice pending" role="status">
+                      <Clock24Regular />
+                      {waiting.some((item) => item.pending_status !== null)
+                        ? `Waiting for the mail server before this becomes ${
+                            waiting.find((item) => item.pending_status !== null)
+                              ?.pending_status ?? ""
+                          }. The status changes when the message is accepted, not before.`
+                        : "A reply is queued and goes out on the next poll."}
+                    </div>
+                  )}
+                  {stuck.map((item) => (
+                    <div className="notice failed" role="alert" key={item.id}>
+                      <Warning20Regular />
+                      This ticket&rsquo;s {item.intent} is {item.state}
+                      {item.last_error === null ? "" : `: ${item.last_error}`}.
+                      {item.pending_status === null
+                        ? ""
+                        : ` The ticket stays ${current.status} until it is delivered.`}
+                      <Button
+                        size="small"
+                        disabled={busy}
+                        onClick={() => {
+                          act(
+                            current.id,
+                            () => apiResend(item.id),
+                            "Queued to send again. Any waiting status change rides on the new delivery.",
+                          );
+                        }}
+                      >
+                        Send again
+                      </Button>
+                    </div>
+                  ))}
                   <div className="detail-grid">
                     <section className="panel conversation">
                       <h2>Conversation</h2>
@@ -706,10 +968,20 @@ function App() {
                           <Field label="Use a reply template">
                             <Select
                               aria-label="Reply template"
-                              defaultValue=""
+                              value={
+                                chosenTemplate === -1
+                                  ? ""
+                                  : String(chosenTemplate)
+                              }
                               onChange={(e) => {
-                                const t = templates[Number(e.target.value)];
+                                const index = Number(e.target.value);
+                                const t = templates[index];
                                 if (t) {
+                                  // Selecting fills the draft and PREVIEWS the
+                                  // status (R24: "Show the resulting status
+                                  // before sending"). It changes nothing until
+                                  // Send.
+                                  setChosenTemplate(index);
                                   setDraft(t.body);
                                   setTarget(
                                     t.status === "No change"
@@ -753,11 +1025,22 @@ function App() {
                         )}
                         <div className="send-row">
                           {!note && (
-                            <Field label="Status after sending">
+                            <Field
+                              label="Status after sending"
+                              {...(live && target !== current.status
+                                ? {
+                                    hint: "Applied when the mail server accepts this message (R28).",
+                                  }
+                                : {})}
+                            >
                               <Select
                                 value={target}
                                 onChange={(e) => {
                                   setTarget(e.target.value);
+                                  // A status chosen by hand overrides whichever
+                                  // template was picked, so the server is not
+                                  // sent a mapping the user has just replaced.
+                                  setChosenTemplate(-1);
                                 }}
                               >
                                 {statuses.map((s) => (
@@ -769,11 +1052,17 @@ function App() {
                           <Button
                             appearance="primary"
                             disabled={
-                              !draft.trim() || draft.includes("[Add steps")
+                              busy ||
+                              !draft.trim() ||
+                              draft.includes("[Add steps")
                             }
                             onClick={send}
                           >
-                            {note ? "Add internal note" : "Send reply (demo)"}
+                            {note
+                              ? "Add internal note"
+                              : live
+                                ? "Send reply"
+                                : "Send reply (demo)"}
                           </Button>
                         </div>
                       </div>
@@ -783,7 +1072,22 @@ function App() {
                       <Field label="Assigned to">
                         <Select
                           value={current.owner}
+                          disabled={busy}
                           onChange={(e) => {
+                            const owner =
+                              e.target.value === "Unassigned"
+                                ? null
+                                : e.target.value;
+                            if (live) {
+                              act(
+                                current.id,
+                                () => apiAssign(current.id, owner),
+                                owner === null
+                                  ? "Ticket unassigned."
+                                  : `Assigned to ${owner}. They have been notified.`,
+                              );
+                              return;
+                            }
                             setTickets(
                               tickets.map((t) =>
                                 t.id === current.id
@@ -793,7 +1097,8 @@ function App() {
                             );
                           }}
                         >
-                          {staff.map((s) => (
+                          <option>Unassigned</option>
+                          {owners.map((s) => (
                             <option key={s}>{s}</option>
                           ))}
                         </Select>
@@ -816,6 +1121,34 @@ function App() {
                           ))}
                         </Select>
                       </Field>
+
+                      {/*
+                        R19/R28: a Resolved ticket can be closed by hand instead
+                        of waiting 72 hours. It still needs a message, and the
+                        ticket stays Resolved until the mail server accepts it -
+                        so this opens the composer rather than flipping a status.
+                      */}
+                      {current.status === "Resolved" && (
+                        <Button
+                          appearance="primary"
+                          disabled={busy}
+                          onClick={() => {
+                            setNote(false);
+                            setTarget("Closed");
+                            setDraft(
+                              draft.trim() === ""
+                                ? "We are closing this ticket. Reply to this email if you need anything else and it will reopen."
+                                : draft,
+                            );
+                            setNotice(
+                              "Closing needs a message to the employee. Edit it below and send.",
+                            );
+                          }}
+                        >
+                          Close this ticket
+                        </Button>
+                      )}
+
                       <hr />
                       <small>RESPONSE DEADLINE</small>
                       <p
@@ -827,6 +1160,133 @@ function App() {
                       </p>
                       <small>REQUESTER</small>
                       <p>{current.person}</p>
+
+                      {/*
+                        R25. Shown live only: there is no server in sample mode
+                        to hold a participant list, and an editable one that
+                        forgot on refresh would be a lie about what was saved.
+                      */}
+                      {live && (
+                        <>
+                          <hr />
+                          <small>ALSO ON THIS TICKET</small>
+                          {onTicket.length === 0 ? (
+                            <p className="muted">
+                              Nobody else is copied. Colleagues CC&rsquo;d by
+                              the employee appear here.
+                            </p>
+                          ) : (
+                            <ul className="participants">
+                              {onTicket.map((person) => (
+                                <li key={person.address}>
+                                  <span>{person.address}</span>
+                                  <Button
+                                    size="small"
+                                    appearance="subtle"
+                                    icon={<Dismiss12Regular />}
+                                    aria-label={`Remove ${person.address}`}
+                                    disabled={busy}
+                                    onClick={() => {
+                                      act(
+                                        current.id,
+                                        () =>
+                                          apiRemoveParticipant(
+                                            current.id,
+                                            person.address,
+                                          ),
+                                        `${person.address} removed. They will not receive further replies.`,
+                                      );
+                                    }}
+                                  />
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="add-participant">
+                            <Input
+                              aria-label="Add a colleague by email"
+                              placeholder="name@allcheckservices.com"
+                              value={newParticipant}
+                              onChange={(_, d) => {
+                                setNewParticipant(d.value);
+                              }}
+                            />
+                            <Button
+                              disabled={busy || newParticipant.trim() === ""}
+                              onClick={() => {
+                                const address = newParticipant.trim();
+                                setNewParticipant("");
+                                act(
+                                  current.id,
+                                  async () => {
+                                    const result = await apiAddParticipants(
+                                      current.id,
+                                      [address],
+                                    );
+                                    if (result.added.length === 0) {
+                                      // Refused, or already on the ticket. Both
+                                      // are worth saying: silently doing
+                                      // nothing reads as a broken button.
+                                      throw new Error(
+                                        result.refused.length > 0
+                                          ? `${address} is not an allcheckservices.com address`
+                                          : `${address} is already on this ticket`,
+                                      );
+                                    }
+                                  },
+                                  `${address} added. They receive future replies, not the history.`,
+                                );
+                              }}
+                            >
+                              Add
+                            </Button>
+                          </div>
+                        </>
+                      )}
+
+                      {attachments.length > 0 && (
+                        <>
+                          <hr />
+                          <small>ATTACHMENTS</small>
+                          <ul className="attachments">
+                            {attachments.map((file) => (
+                              <li key={file.id}>
+                                <Attach20Regular />
+                                <a href={attachmentUrl(file.id)}>
+                                  {file.filename}
+                                </a>
+                                <span className="muted">
+                                  {Math.max(1, Math.round(file.bytes / 1024))}{" "}
+                                  KB
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+
+                      {/* R08: who did what, as distinct from what was said. */}
+                      {live && audit.length > 0 && (
+                        <>
+                          <hr />
+                          <small>HISTORY</small>
+                          <ul className="audit">
+                            {audit.map((entry) => (
+                              <li key={entry.id}>
+                                <strong>{entry.actor}</strong>{" "}
+                                {entry.action.replaceAll("_", " ")}
+                                {entry.detail === null
+                                  ? ""
+                                  : ` · ${entry.detail}`}
+                                <time>
+                                  {entry.at.slice(0, 16).replace("T", " ")}
+                                </time>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+
                       <hr />
                       <p className="muted">
                         Working hours
@@ -843,34 +1303,60 @@ function App() {
                       <h1>Reply templates</h1>
                       <p>Good answers, without starting from scratch.</p>
                     </div>
-                    <Button
-                      appearance="primary"
-                      icon={<Add20Regular />}
-                      onClick={() => {
-                        setEditing(templates.length);
-                        setName("");
-                        setBody("");
-                        setTemplateStatus("No change");
-                      }}
-                    >
-                      Create template
-                    </Button>
+                    {/*
+                      R24: only the admin may change shared templates. All five
+                      staff can still select and send them. Hidden rather than
+                      disabled because a button that exists and refuses reads as
+                      a fault; the server enforces it either way.
+                    */}
+                    {(!live || identity?.isAdmin === true) && (
+                      <Button
+                        appearance="primary"
+                        icon={<Add20Regular />}
+                        onClick={() => {
+                          setEditing(templates.length);
+                          setName("");
+                          setBody("");
+                          setTemplateStatus("No change");
+                        }}
+                      >
+                        Create template
+                      </Button>
+                    )}
                   </div>
                   <div className="templates">
                     {templates.map((t, i) => (
                       <section className="panel template" key={i}>
                         <div className="row">
                           <h2>{t.name}</h2>
-                          <Button
-                            onClick={() => {
-                              setEditing(i);
-                              setName(t.name);
-                              setBody(t.body);
-                              setTemplateStatus(t.status);
-                            }}
-                          >
-                            Edit
-                          </Button>
+                          {(!live || identity?.isAdmin === true) && (
+                            <>
+                              <Button
+                                onClick={() => {
+                                  setEditing(i);
+                                  setName(t.name);
+                                  setBody(t.body);
+                                  setTemplateStatus(t.status);
+                                }}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                appearance="subtle"
+                                icon={<Delete20Regular />}
+                                aria-label={`Delete ${t.name}`}
+                                disabled={busy}
+                                onClick={() => {
+                                  saveTemplates(
+                                    templates.filter((_, at) => at !== i),
+                                    t.id === undefined
+                                      ? null
+                                      : { deleteId: t.id },
+                                  );
+                                }}
+                              />
+                            </>
+                          )}
                         </div>
                         <p>{t.body}</p>
                         <small>After sending</small>
@@ -931,17 +1417,31 @@ function App() {
                         </Button>
                         <Button
                           appearance="primary"
-                          disabled={!name.trim() || !body.trim()}
+                          disabled={busy || !name.trim() || !body.trim()}
                           onClick={() => {
                             const next = [...templates];
+                            const existing = templates[editing];
                             next[editing] = {
+                              ...(existing?.id === undefined
+                                ? {}
+                                : { id: existing.id }),
                               name: name.trim(),
                               body: body.trim(),
                               status: templateStatus,
                             };
-                            setTemplates(next);
-                            setEditing(-1);
-                            setNotice("Template saved for this preview.");
+                            saveTemplates(next, {
+                              save: {
+                                ...(existing?.id === undefined
+                                  ? {}
+                                  : { id: existing.id }),
+                                name: name.trim(),
+                                body: body.trim(),
+                                mapsTo:
+                                  templateStatus === "No change"
+                                    ? null
+                                    : templateStatus,
+                              },
+                            });
                           }}
                         >
                           Save template
@@ -957,31 +1457,91 @@ function App() {
                       <h1>Your IT team</h1>
                       <p>Shared visibility. Clear ownership.</p>
                     </div>
-                    <Badge appearance="tint">5 staff members</Badge>
+                    <Badge appearance="tint">
+                      {String(
+                        live && team.length > 0 ? team.length : staff.length,
+                      )}{" "}
+                      staff members
+                    </Badge>
                   </div>
                   <section className="panel">
-                    {staff.map((s, i) => (
-                      <div className="team-row" key={s}>
-                        <Avatar name={s} />
+                    {(live && team.length > 0
+                      ? team
+                      : staff.map((s, i) => ({
+                          name: s,
+                          email: null,
+                          available: true,
+                          enabled: true,
+                          is_admin: i === 0,
+                          has_password: false,
+                          openTickets: open.filter((t) => t.owner === s).length,
+                        }))
+                    ).map((member) => (
+                      <div className="team-row" key={member.name}>
+                        <Avatar name={member.name} />
                         <div>
-                          <strong>{s}</strong>
+                          <strong>{member.name}</strong>
                           <small>
-                            {i === 0 ? "Administrator" : "IT support"}
+                            {member.is_admin ? "Administrator" : "IT support"}
                           </small>
                         </div>
-                        <span>
-                          {open.filter((t) => t.owner === s).length} open
-                          tickets
-                        </span>
-                        <Badge color="success" appearance="tint">
-                          Available
-                        </Badge>
+                        <span>{member.openTickets} open tickets</span>
+                        {!member.enabled ? (
+                          <Badge color="danger" appearance="tint">
+                            No account
+                          </Badge>
+                        ) : (
+                          <Badge
+                            color={member.available ? "success" : "warning"}
+                            appearance="tint"
+                          >
+                            {member.available ? "Available" : "Unavailable"}
+                          </Badge>
+                        )}
+                        {/*
+                          R24 keeps these apart on purpose. Availability stops
+                          new work reaching somebody and revokes nothing;
+                          disabling the account signs them out and moves their
+                          open tickets to whoever can work them.
+                        */}
+                        {live && identity?.isAdmin === true && (
+                          <div className="team-actions">
+                            <Button
+                              size="small"
+                              disabled={busy || !member.enabled}
+                              onClick={() => {
+                                changeStaff(member.name, {
+                                  available: !member.available,
+                                });
+                              }}
+                            >
+                              {member.available
+                                ? "Mark unavailable"
+                                : "Mark available"}
+                            </Button>
+                            <Button
+                              size="small"
+                              appearance="subtle"
+                              disabled={busy || member.name === identity.name}
+                              onClick={() => {
+                                changeStaff(member.name, {
+                                  enabled: !member.enabled,
+                                });
+                              }}
+                            >
+                              {member.enabled
+                                ? "Disable account"
+                                : "Enable account"}
+                            </Button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </section>
                   <p className="muted">
-                    Availability controls will be added with the assignment
-                    engine. This page previews team workload.
+                    {live
+                      ? "Marking somebody unavailable moves their open tickets to whoever can work them, and tells the new owners. Disabling an account also signs them out."
+                      : "Sample data. Availability controls appear when a server is connected."}
                   </p>
                 </>
               ) : (

@@ -714,3 +714,142 @@ button.brand {
   border-left: 3px solid #d9c9c0;
   background: #fcfaf9;
 }
+
+/* ------------------------------------------------ participants and history */
+/* R25, R08, R28: the panels added when the model gained CC participants, an
+   audit trail and visible pending deliveries.
+
+   Written MOBILE-FIRST, unlike the layers above it: the base rules target a
+   360 px phone and `min-width` queries add the desktop treatment. That is the
+   direction docs/engineering-standards.md asks for, and the reason is that a
+   new component added without a `max-width` block silently breaks on a phone,
+   whereas one added without a `min-width` block merely looks plain on a
+   desktop. The inherited sheets have not been inverted — see T028. */
+
+.participants,
+.attachments,
+.audit {
+  list-style: none;
+  margin: 6px 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.participants li,
+.attachments li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  /* Wraps rather than overflows: an address is longer than a phone is wide. */
+  flex-wrap: wrap;
+}
+.participants li span,
+.attachments li a {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attachments li a {
+  color: var(--brand, #b54720);
+}
+.add-participant {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.audit li {
+  font-size: 12px;
+  color: #5d534e;
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.audit time {
+  color: #8a7c74;
+  font-variant-numeric: tabular-nums;
+}
+.team-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+/* A queued or failed delivery. Distinct colours because they need different
+   responses: one is "wait", the other is "somebody has to do something". */
+.notice.pending {
+  background: #fdf6ec;
+  border-color: #e7d3b4;
+}
+.notice.failed {
+  background: #fdeeea;
+  border-color: #e7bdb0;
+  color: #7c3015;
+}
+.notice.failed svg,
+.notice.pending svg {
+  flex: 0 0 auto;
+}
+
+@media (min-width: 700px) {
+  .add-participant {
+    flex-direction: row;
+    align-items: end;
+  }
+  .add-participant .fui-Input {
+    flex: 1 1 auto;
+  }
+  .team-actions {
+    width: auto;
+  }
+}
+
+/* ------------------------------------------------------------ touch targets */
+/* WCAG 2.2 target size. Applied only where the pointer is coarse, so a mouse
+   user is not given a toolbar of oversized buttons — the requirement is about
+   what a finger can hit, not about how things look. */
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  select,
+  .nav,
+  .tab {
+    min-height: 44px;
+  }
+  .participants button,
+  .attachments button {
+    min-width: 44px;
+  }
+}
+
+/* ----------------------------------------------------------- forced colours */
+/* Windows high-contrast mode replaces every colour with the user's own, which
+   silently erases anything that carried meaning through background colour
+   alone: the status pills, the overdue row, the internal-note stripe. Each gets
+   a border instead, because a border survives. */
+@media (forced-colors: active) {
+  .status,
+  .badge,
+  .notice,
+  .preview {
+    border: 1px solid CanvasText;
+  }
+  .conversation .internal,
+  .conversation .from-employee {
+    border-left: 3px solid CanvasText;
+  }
+  .nav.active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  /* Fluent renders some focus rings with box-shadow, which forced colours
+     drop entirely - leaving a keyboard user with no visible position. */
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

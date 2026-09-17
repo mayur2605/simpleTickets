@@ -161,9 +161,112 @@ for (const width of [360, 768, 1440]) {
   )
     throw new Error("Page overflow at " + width);
 }
+
+// --- keyboard journey (T028) -----------------------------------------------
+// Every control the queue needs must be reachable and operable without a
+// mouse. Asserted by tabbing rather than by clicking with the keyboard's name
+// on it: a div with a click handler passes the second test and fails the first.
+await page.setViewportSize({ width: 1440, height: 1000 });
+await page.reload();
+await expect(
+  page.getByRole("heading", { name: "SimpleTickets" }),
+).toBeVisible();
+await page.keyboard.press("Tab");
+const firstStop = await page.evaluate(() => {
+  const el = document.activeElement;
+  return el === null ? null : el.tagName.toLowerCase();
+});
+if (firstStop !== "button" && firstStop !== "a")
+  throw new Error("First Tab stop is not a control: " + String(firstStop));
+
+// Reach the ticket queue with the keyboard alone, and open a ticket with Enter.
+let opened = false;
+for (let i = 0; i < 120 && !opened; i += 1) {
+  // Matched on the row BUTTON, not on any focused element containing that
+  // text: the queue's scroll region is itself focusable and its textContent
+  // holds every row, so a text-only match stops one element too early and
+  // Enter does nothing.
+  const name = await page.evaluate(() => {
+    const el = document.activeElement;
+    return el !== null && el.classList.contains("ticket-link")
+      ? (el.textContent ?? "").trim()
+      : "";
+  });
+  if (name.includes("Unable to connect to the office VPN")) {
+    await page.keyboard.press("Enter");
+    opened = true;
+    break;
+  }
+  await page.keyboard.press("Tab");
+}
+if (!opened) throw new Error("Could not reach a ticket row by keyboard");
+await expect(page.locator(".detail-heading h1")).toBeVisible();
+
+// The focused element must be visible, not merely focused: a focus ring that
+// forced colours or a box-shadow swallows leaves a keyboard user lost.
+const ringed = await page.evaluate(() => {
+  const el = document.activeElement;
+  if (el === null) return false;
+  const style = getComputedStyle(el);
+  return (
+    style.outlineStyle !== "none" ||
+    style.boxShadow !== "none" ||
+    style.borderColor !== ""
+  );
+});
+if (!ringed) throw new Error("Focused element has no visible focus indicator");
+
+// Escape the detail view the same way a keyboard user would, then carry on.
+await page.getByRole("button", { name: "Back to tickets" }).click();
+await expect(
+  page.getByRole("heading", { name: "SimpleTickets" }),
+).toBeVisible();
+
+// --- 200% zoom (T028) -------------------------------------------------------
+// WCAG 1.4.4. Emulated by halving the viewport, which is what doubling the text
+// size does to the space available: 1280x1024 at 200% is a 640x512 layout.
+for (const [width, height] of [
+  [640, 512],
+  [960, 640],
+]) {
+  await page.setViewportSize({ width, height });
+  await expect(
+    page.getByRole("heading", { name: "SimpleTickets" }),
+  ).toBeVisible();
+  if (
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 1,
+    )
+  )
+    throw new Error("Page overflows horizontally at 200% zoom (" + width + ")");
+}
+
+// --- touch targets (T028) ---------------------------------------------------
+// WCAG 2.2 target size, on the viewport where it matters. Checked against the
+// rendered box, because a min-height rule that a flex parent overrides is a
+// rule that is not in force.
+await page.setViewportSize({ width: 390, height: 844 });
+await page.emulateMedia({ media: "screen" });
+await page.reload();
+await expect(
+  page.getByRole("heading", { name: "SimpleTickets" }),
+).toBeVisible();
+const smallTargets = await page.evaluate(() =>
+  [...document.querySelectorAll("nav button")]
+    .map((el) => ({
+      name: (el.textContent ?? "").trim(),
+      h: el.getBoundingClientRect().height,
+    }))
+    .filter((item) => item.h > 0 && item.h < 40),
+);
+if (smallTargets.length > 0)
+  throw new Error(
+    "Navigation targets under 40px on a phone: " + JSON.stringify(smallTargets),
+  );
+
 if (errors.length) throw new Error(errors.join("\n"));
 console.log(
-  "PASS: filters, empty state, reply/status mapping, private notes, template isolation/creation, mobile width, no browser errors.",
+  "PASS: filters, empty state, reply/status mapping, private notes, template isolation/creation, mobile width, keyboard journey, 200% zoom, touch targets, no browser errors.",
 );
 await browser.close();
 await server.close();

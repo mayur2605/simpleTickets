@@ -77,9 +77,52 @@ export interface ApiStaff {
   name: string;
   email: string | null;
   available: boolean;
+  /** Account access (R24). Separate from `available`: see setEnabled. */
+  enabled: boolean;
   is_admin: boolean;
   has_password: boolean;
   openTickets: number;
+}
+
+/** Someone copied on a ticket (R25). `removed_at` set means no longer on it. */
+export interface ApiParticipant {
+  address: string;
+  added_by: string;
+  added_at: string;
+  removed_at: string | null;
+}
+
+/** One entry in the ticket's audit trail (R08). */
+export interface ApiAudit {
+  id: number;
+  ticket_id: number | null;
+  actor: string;
+  action: string;
+  detail: string | null;
+  at: string;
+}
+
+/**
+ * Outgoing mail this ticket is still waiting on (R28).
+ *
+ * The dashboard has to show this. A status change hangs off the message that
+ * justifies it, so pressing Resolve and seeing "New" is correct and looks
+ * broken - and the obvious response is to press it again.
+ */
+export interface ApiPending {
+  id: number;
+  intent: string;
+  state: string;
+  pending_status: string | null;
+  last_error: string | null;
+}
+
+export interface ApiTemplate {
+  id: number;
+  name: string;
+  body: string;
+  /** The status sending this template requests, or null for no change. */
+  maps_to: string | null;
 }
 
 /** Raised for a 401, so the UI can show the sign-in form rather than an error. */
@@ -187,11 +230,21 @@ export async function fetchTickets(): Promise<{
   };
 }
 
-export async function fetchTicket(id: number): Promise<{
+export interface ApiTicketDetail {
   ticket: ApiTicket;
   messages: ApiMessage[];
   attachments: ApiAttachment[];
-}> {
+  participants: ApiParticipant[];
+  audit: ApiAudit[];
+  pending: ApiPending[];
+}
+
+/** Arrays the server may not have sent, rather than a cast that pretends it did. */
+function list<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+export async function fetchTicket(id: number): Promise<ApiTicketDetail> {
   const body = await call(`/api/tickets/${String(id)}`);
   if (
     !isRecord(body) ||
@@ -203,9 +256,10 @@ export async function fetchTicket(id: number): Promise<{
   return {
     ticket: body["ticket"] as unknown as ApiTicket,
     messages: body["messages"] as ApiMessage[],
-    attachments: Array.isArray(body["attachments"])
-      ? (body["attachments"] as ApiAttachment[])
-      : [],
+    attachments: list<ApiAttachment>(body["attachments"]),
+    participants: list<ApiParticipant>(body["participants"]),
+    audit: list<ApiAudit>(body["audit"]),
+    pending: list<ApiPending>(body["pending"]),
   };
 }
 
@@ -221,10 +275,19 @@ export async function fetchStaff(): Promise<ApiStaff[]> {
  * Note that none of these take an author. The server takes it from the session;
  * a client that supplied one would be claiming to be someone.
  */
-export async function sendReply(id: number, body: string): Promise<void> {
+export async function sendReply(
+  id: number,
+  body: string,
+  templateId?: number,
+): Promise<void> {
+  // The BODY is always what is on screen, never the stored template. R24 lets
+  // staff edit a selected reply before sending; only the template's status
+  // mapping is read server-side.
   await call(`/api/tickets/${String(id)}/reply`, {
     method: "POST",
-    body: JSON.stringify({ body }),
+    body: JSON.stringify(
+      templateId === undefined ? { body } : { body, templateId },
+    ),
   });
 }
 
@@ -256,6 +319,82 @@ export async function assign(id: number, owner: string | null): Promise<void> {
     method: "POST",
     body: JSON.stringify({ owner }),
   });
+}
+
+export async function fetchTemplates(): Promise<ApiTemplate[]> {
+  const body = await call("/api/templates");
+  if (!isRecord(body) || !Array.isArray(body["templates"])) {
+    throw new Error("Unexpected response from /api/templates");
+  }
+  return body["templates"] as ApiTemplate[];
+}
+
+/** Admin only, enforced server-side. `id` absent creates, present replaces. */
+export async function saveTemplate(template: {
+  id?: number;
+  name: string;
+  body: string;
+  mapsTo: string | null;
+}): Promise<void> {
+  const { id, ...rest } = template;
+  await call(
+    id === undefined ? "/api/templates" : `/api/templates/${String(id)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(rest),
+    },
+  );
+}
+
+export async function deleteTemplate(id: number): Promise<void> {
+  await call(`/api/templates/${String(id)}`, { method: "DELETE" });
+}
+
+/** R25: add company colleagues to a ticket. External addresses are refused. */
+export async function addParticipants(
+  id: number,
+  addresses: string[],
+): Promise<{ added: string[]; refused: string[] }> {
+  const body = await call(`/api/tickets/${String(id)}/participants`, {
+    method: "POST",
+    body: JSON.stringify({ add: addresses }),
+  });
+  if (!isRecord(body)) throw new Error("Unexpected response from participants");
+  return {
+    added: list<string>(body["added"]),
+    refused: list<string>(body["refused"]),
+  };
+}
+
+export async function removeParticipant(
+  id: number,
+  address: string,
+): Promise<void> {
+  await call(`/api/tickets/${String(id)}/participants`, {
+    method: "POST",
+    body: JSON.stringify({ remove: address }),
+  });
+}
+
+/** Admin only. `available` stops new work; `enabled` is account access (R24). */
+export async function setStaffFlag(
+  name: string,
+  flag: { available: boolean } | { enabled: boolean },
+): Promise<void> {
+  await call("/api/staff", {
+    method: "POST",
+    body: JSON.stringify({ name, ...flag }),
+  });
+}
+
+/**
+ * Put a bounced, failed or ambiguous message back in the queue (R28).
+ *
+ * This is also what re-anchors an auto-close clock: the acceptance is cleared,
+ * so a resent resolution counts its 72 hours from the delivery that arrived.
+ */
+export async function resend(outboxId: number): Promise<void> {
+  await call(`/api/outbox/${String(outboxId)}/resend`, { method: "POST" });
 }
 
 /** Where to download an attachment. Same origin, so the cookie goes with it. */
