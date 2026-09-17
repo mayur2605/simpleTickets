@@ -105,3 +105,40 @@ describe("buildReply with CC participants", () => {
     expect(buildReply(base).cc).toBeUndefined();
   });
 });
+
+describe("the signature (R14)", () => {
+  const base = {
+    ticketNumber: 42,
+    ticketSubject: "Printer jams",
+    requester: "ananya.rao@allcheckservices.com",
+    supportAddress: "SimpleTickets <support@allcheckservices.com>",
+    body: "We have ordered a new roller.",
+    threadMessageIds: [],
+    date: new Date("2026-09-17T10:00:00.000Z"),
+  };
+
+  /**
+   * Appended rather than typed, so it cannot be forgotten and cannot claim
+   * somebody else - the caller takes the name from the session.
+   */
+  it("signs with the responding staff member's name", () => {
+    const message = buildReply({ ...base, signedBy: "staff2" });
+    expect(message.body).toContain("We have ordered a new roller.");
+    expect(message.body.endsWith("--\nstaff2\nIT Support")).toBe(true);
+  });
+
+  it("does not double the blank line when the body already ends in one", () => {
+    const message = buildReply({ ...base, body: "Sorted.\n\n", signedBy: "staff2" });
+    expect(message.body).toBe("Sorted.\n\n--\nstaff2\nIT Support");
+  });
+
+  /**
+   * An automatic message signs nothing. "IT Support" under an auto-closure is a
+   * fiction - nobody pressed anything, and the audit trail should not read as
+   * though somebody did.
+   */
+  it("leaves an unsigned message alone", () => {
+    expect(buildReply(base).body).toBe(base.body);
+    expect(buildReply({ ...base, signedBy: "" }).body).toBe(base.body);
+  });
+});

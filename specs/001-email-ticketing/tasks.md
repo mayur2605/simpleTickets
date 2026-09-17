@@ -8,8 +8,8 @@ serves the dashboard, polls the mailbox, sends queued mail, assigns tickets, not
 staff, reminds on overdue responses, closes resolved tickets, stores attachments and backs
 the database up nightly. All eight decisions approved on 16 September 2026 are implemented.
 
-**What "built" does and does not mean here.** The server gate passes with 245 unit tests
-and 130 integration tests against real PostgreSQL; the prototype gate passes 19 unit tests,
+**What "built" does and does not mean here.** The server gate passes with 248 unit tests
+and 153 integration tests against real PostgreSQL; the prototype gate passes 19 unit tests,
 a browser smoke run and a production build. Ingestion is measured on this stack, not
 inherited: on 17 September 2026 an empty database pointed at the live mailbox independently
 rebuilt the same tickets, including the threaded reply, and logged three unapproved senders
@@ -98,7 +98,7 @@ A local prototype privacy regression was fixed and verified; see
 
 - [~] T028 Extend strict type/lint/format/CI gates to the production backend, add test-first domain and integration suites, and migrate prototype CSS to mobile-first with accessibility and cross-browser validation. See docs/engineering-standards.md.
   Backend: the same gate as the prototype - strict type-aware ESLint at zero warnings,
-  Prettier, typecheck, **245 unit tests and 130 integration tests** against real PostgreSQL,
+  Prettier, typecheck, **248 unit tests and 153 integration tests** against real PostgreSQL,
   wired into `server`'s `npm run verify`. The integration suites are new and were the
   standing gap: under D1 `store.ts` could only run against Cloudflare's hosted database, so
   the batches, the claim and the R28 ordering were verified by reading them.
@@ -296,10 +296,13 @@ A local prototype privacy regression was fixed and verified; see
   a Cc address refused by `mime.ts`. Oversized files, including that the notice fires once.
   Mid-processing failure, for the case that matters: a failed acknowledgement rolls the
   ticket back rather than leaving one nothing will ever acknowledge.
-  **Not done:** malformed emails are handled by construction (an unparseable sender is
-  logged `error`, a body that will not decode degrades to empty) but are not driven by a
-  test - the fake mailbox hands over already-parsed messages, so malformed MIME would need
-  the IMAP layer itself faked rather than mocked.
+  Malformed messages are now driven through the pipeline: a From header with no address at
+  all, an empty body with no subject, two messages with no Message-ID (the partial unique
+  index exists for exactly that), and a References header that is only punctuation. Each
+  produces the right outcome rather than an exception.
+  **Not done:** malformed MIME specifically. The fake mailbox hands over already-parsed
+  messages, so a broken multipart structure would need the IMAP layer itself faked rather
+  than mocked - a fake IMAP server, not a module mock.
 
 ## Phase 3 — IT workflow
 
@@ -320,9 +323,13 @@ A local prototype privacy regression was fixed and verified; see
   deadline. Every move is audited, with the actor taken from the session. `assignable` ANDs
   availability with account access in one place, so no caller can forget the second half and
   hand work to a disabled account.
-  **Not done:** assignment is still not serialised against concurrent workload changes. With
-  one poller and five staff this has not mattered, and it is the same shape of problem the
-  ticker's `#running` flag solves for polling - but it is a real gap the task asks for.
+  **Assignment is now serialised**, by a transaction-scoped PostgreSQL advisory lock around
+  the read-workloads / choose / assign sequence. Without it two assignments deciding at once
+  both read the same workloads and both pick the same least-loaded person, who ends up with
+  two tickets while somebody else gets none - the same hazard the outbox claim solves with
+  FOR UPDATE SKIP LOCKED, which assignment had no equivalent of. An advisory lock rather
+  than row locks because what is protected is a decision made from several tables, not any
+  one row. Asserted by racing two assignments against two idle staff and requiring one each.
 - [x] T016 Build shared ticket list/detail with All Tickets as the default, a My Tickets filter scoped to the signed-in assignee, search, composable filters, workload and overdue summaries. Include a manual Close action on Resolved tickets and a visible indicator for a transition still waiting on delivery.
   Done. All Tickets is the default page; My Tickets filters to the signed-in name, taken
   from the session rather than a picker. Search, status filter and a Needs-attention toggle
@@ -364,7 +371,7 @@ A local prototype privacy regression was fixed and verified; see
   Overdue reminders go to the assignee and every admin, repeating every four **working**
   hours (R18) with `last_reminder_at` as the memory. 22 tests, pure and integration.
   **Not proved:** no notification has been delivered to a person — `MAIL_SEND` is off.
-- [~] T019 Test assignment concurrency, all-staff-unavailable, account disabling during active work, rejection of staff-authored inbound mail, and attachment access.
+- [x] T019 Test assignment concurrency, all-staff-unavailable, account disabling during active work, rejection of staff-authored inbound mail, and attachment access.
   Covered: all-staff-unavailable end to end, including that the ticket is left visibly
   unassigned and every admin is emailed. Account disabling during active work - the session
   is revoked, a request already in flight is refused, the open ticket has moved, and
@@ -372,9 +379,8 @@ A local prototype privacy regression was fixed and verified; see
   unapproved sender and a reply to a one-way notification, which is the hard one because
   staff are on the approved domain. Attachment access requires a session and the stored
   filename is sanitised again on the way out.
-  **Not done:** assignment concurrency. The outbox claim is proved with two concurrent
-  claims against the real database; assignment has no equivalent test because it has no
-  equivalent lock - see T015.
+  **Assignment concurrency is now covered too**: two assignments raced against two idle
+  staff must hand out one each, which is what the advisory lock added in T015 guarantees.
 
 - [x] T027 Add an admin-only Reply Templates section with reusable name/body records, seed the four agreed starter templates, and implement template selection/send for all staff using the normal public-reply flow. Allow staff to edit the selected message before sending without changing the saved template. Add the agreed send-time status mappings, preview the intended status, and allow admin-selected custom mappings with no-change as default. Verify admin authorization, draft/template isolation, transition/message validation, atomic outgoing intent and status updates, visible delivery failures, and that template changes preserve previously sent messages. A template-mapped transition is delivery-gated like any other and takes effect only on SMTP acceptance (R28).
   Done. `reply_templates` holds name, body and `maps_to`, with a CHECK that refuses Closed -
@@ -399,7 +405,7 @@ A local prototype privacy regression was fixed and verified; see
 
 ## Phase 4 — Lifecycle and reminders
 
-- [~] T020 Require an emailed information request before entering Waiting for Employee, and apply the transition only on SMTP acceptance of that message (R28), preserving status, deadline and reminders until then. Implement response episodes, repeated reminders, waiting behavior and admin/assignee recipient deduplication. Test that a pending or failed information request keeps reminders running.
+- [x] T020 Require an emailed information request before entering Waiting for Employee, and apply the transition only on SMTP acceptance of that message (R28), preserving status, deadline and reminders until then. Implement response episodes, repeated reminders, waiting behavior and admin/assignee recipient deduplication. Test that a pending or failed information request keeps reminders running.
   Done: Waiting for Employee is delivery-gated - `transitionRule` returns a `reply` intent
   for it, the API refuses an empty body, and the status does not move until the mail server
   accepts. Reminders repeat every four WORKING hours to the assignee and every admin, with
@@ -407,10 +413,17 @@ A local prototype privacy regression was fixed and verified; see
   once. A ticket whose information request is still pending or has failed keeps its status,
   its deadline and therefore its reminders, because none of them move until acceptance -
   that follows from the gating rather than from a separate rule.
-  **Not done:** response episodes as a modelled concept. The first-response deadline is
-  tracked; a second episode - IT replies, the employee comes back, a new response is owed -
-  is not, so `response_due` describes the first exchange only.
-- [~] T021 Require a non-empty public resolution message when resolving, reject missing-message attempts, and implement resolution/closure emails, manual closure of Resolved tickets, automatic closure and reopening with owner retention/reassignment. Apply Resolved only on acceptance of the resolution email, anchor the 72 elapsed hours to that acceptance, keep the ticket Resolved after either closure route until the closure email is accepted, and pause automatic closure on a later resolution bounce until a resend is accepted (R19, R28).
+  **Response episodes landed on 17 September.** "Answered" is now per episode rather than
+  per ticket: the earliest outbound message AFTER the most recent inbound one. The obvious
+  version - the earliest outbound message, full stop - answered the wrong question, because
+  a ticket IT had ever replied to read as answered forever, so an employee who wrote back a
+  week later was owed nothing and appeared on no overdue list.
+  R16's two halves are one statement: a new employee message sets a new deadline only when
+  IT has replied since the last one. A follow-up while a response is already owed leaves the
+  existing deadline where it is - otherwise an anxious employee writing three times before
+  anyone looks pushes their own deadline out each time, and the ticket needing attention most
+  sinks down the overdue list. Reminders use the same definition. Twelve tests.
+- [x] T021 Require a non-empty public resolution message when resolving, reject missing-message attempts, and implement resolution/closure emails, manual closure of Resolved tickets, automatic closure and reopening with owner retention/reassignment. Apply Resolved only on acceptance of the resolution email, anchor the 72 elapsed hours to that acceptance, keep the ticket Resolved after either closure route until the closure email is accepted, and pause automatic closure on a later resolution bounce until a resend is accepted (R19, R28).
   Mostly done: resolving requires a non-empty body (the API rejects an empty one), and the
   status moves only when the mail server accepts that message. The 72 elapsed hours are
   anchored to `outbox.accepted_at` on the resolution row, not to the button press —
@@ -421,9 +434,11 @@ A local prototype privacy regression was fixed and verified; see
   **Re-anchoring landed on 17 September**: resending clears `accepted_at`, so the 72 hours
   run from the delivery that arrived. Asserted directly - accepted long ago, ready to close;
   bounced, not ready; requeued, still not ready; accepted again now, not ready.
-  **Not done:** reassignment on reopening when the original owner has gone. A reopened
-  ticket keeps its owner even if that owner's account is now disabled, so it can come back
-  to nobody who is working.
+  **Reassignment on reopening landed on 17 September.** A reply reopens the ticket and keeps
+  its owner, as R10 asks - but only if that owner can still work it. An account disabled
+  since the ticket was resolved would otherwise own a live conversation nobody is reading,
+  which is the failure redistribution exists to prevent arriving through a door
+  redistribution does not watch. If nobody can take it, every admin is told.
 - [~] T022 Test reminder job retries, unresolved clock transitions, weekends, repeated follow-ups and closure/reply races, and verify employee email text never invokes closure. Cover the delivery-gated cases: a resolution accepted late, a resolution that never sends, manual closure racing an employee reply, and a bounce-paused ticket that must not auto-close until a resend is accepted.
   Covered: repeated follow-ups on the four-working-hour schedule, including that a weekend
   pushes the next one to Monday rather than firing four times overnight; a resolution

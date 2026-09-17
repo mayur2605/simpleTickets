@@ -1,4 +1,4 @@
-import { chromium, expect } from "@playwright/test";
+import { chromium, firefox, webkit, expect } from "@playwright/test";
 import { createServer } from "vite";
 
 // This test drives the dashboard on its SAMPLE data, and asserts exact row
@@ -8,18 +8,37 @@ import { createServer } from "vite";
 // quietly coupled to whether a real server happens to be running on 8787.
 process.env.VITE_PROXY_TARGET = "http://127.0.0.1:59999";
 
+// A port per engine, so a matrix job running all three at once does not have
+// them fighting over 5174. strictPort, so a collision fails loudly rather than
+// silently testing whatever is already listening.
+const ports = { chromium: 5174, firefox: 5175, webkit: 5176 };
+const port = ports[process.env.SMOKE_BROWSER ?? "chromium"] ?? 5174;
 const server = await createServer({
-  server: { host: "127.0.0.1", port: 5174, strictPort: true },
+  server: { host: "127.0.0.1", port, strictPort: true },
 });
 await server.listen();
-const browser = await chromium.launch({
-  channel: process.env.CI ? undefined : "chrome",
+// SMOKE_BROWSER picks the engine (T028: Firefox and WebKit were an open item).
+// Chromium is the default because it is what the main gate runs on every
+// commit; the other two run in their own CI job, so a WebKit-only layout bug is
+// caught without tripling the time every push costs.
+const engines = { chromium, firefox, webkit };
+const engineName = process.env.SMOKE_BROWSER ?? "chromium";
+const engine = engines[engineName];
+if (engine === undefined)
+  throw new Error(
+    `SMOKE_BROWSER must be chromium, firefox or webkit; got ${engineName}`,
+  );
+
+const browser = await engine.launch({
+  // Real Chrome locally, because that is what the team uses. Firefox and WebKit
+  // have no channels here and Playwright's own builds are the point.
+  channel: engineName === "chromium" && !process.env.CI ? "chrome" : undefined,
   headless: true,
 });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
-await page.goto("http://127.0.0.1:5174");
+await page.goto(`http://127.0.0.1:${port}`);
 await expect(
   page.getByRole("heading", { name: "SimpleTickets" }),
 ).toBeVisible();
@@ -67,7 +86,8 @@ await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(1);
 await page
   .getByRole("combobox", { name: "Filter status" })
   .selectOption("All statuses");
-await page.screenshot({ path: "dashboard-preview.png", fullPage: true });
+if (engineName === "chromium")
+  await page.screenshot({ path: "dashboard-preview.png", fullPage: true });
 await page.getByRole("button", { name: /ST-1048/ }).click();
 await page.getByRole("combobox", { name: "Reply template" }).selectOption("1");
 await expect(
@@ -120,7 +140,8 @@ await page.getByRole("button", { name: "Send reply (demo)" }).click();
 await expect(page.locator("article:not(.internal)")).not.toContainText([
   "Check the VPN gateway logs.",
 ]);
-await page.screenshot({ path: "ticket-preview.png", fullPage: true });
+if (engineName === "chromium")
+  await page.screenshot({ path: "ticket-preview.png", fullPage: true });
 await page
   .getByRole("button", { name: "Reply Templates", exact: true })
   .click();
@@ -148,7 +169,10 @@ const overflow = await page.evaluate(
   () => document.documentElement.scrollWidth > window.innerWidth,
 );
 if (overflow) throw new Error("Page overflows mobile viewport");
-await page.screenshot({ path: "mobile-preview.png", fullPage: true });
+// Only from chromium: these are committed design references, and three engines
+// overwriting them in turn would make the file depend on which job ran last.
+if (engineName === "chromium")
+  await page.screenshot({ path: "mobile-preview.png", fullPage: true });
 for (const width of [360, 768, 1440]) {
   await page.setViewportSize({ width, height: 900 });
   await expect(
@@ -176,30 +200,56 @@ const firstStop = await page.evaluate(() => {
   const el = document.activeElement;
   return el === null ? null : el.tagName.toLowerCase();
 });
-if (firstStop !== "button" && firstStop !== "a")
+// Any real control will do. WebKit is the reason this is not "a button":
+// Safari's default tab order skips buttons and links entirely unless the user
+// turns on "Press Tab to highlight each item", so the first stop there is the
+// search input. That is a browser setting, not something the page decides, and
+// asserting the Chromium answer would fail WebKit for being Safari.
+if (!["button", "a", "input", "select", "textarea"].includes(String(firstStop)))
   throw new Error("First Tab stop is not a control: " + String(firstStop));
 
 // Reach the ticket queue with the keyboard alone, and open a ticket with Enter.
-let opened = false;
-for (let i = 0; i < 120 && !opened; i += 1) {
-  // Matched on the row BUTTON, not on any focused element containing that
-  // text: the queue's scroll region is itself focusable and its textContent
-  // holds every row, so a text-only match stops one element too early and
-  // Enter does nothing.
-  const name = await page.evaluate(() => {
-    const el = document.activeElement;
-    return el !== null && el.classList.contains("ticket-link")
-      ? (el.textContent ?? "").trim()
-      : "";
-  });
-  if (name.includes("Unable to connect to the office VPN")) {
-    await page.keyboard.press("Enter");
-    opened = true;
-    break;
+//
+// WebKit is excluded from the TAB WALK, not from the keyboard check. Safari's
+// default tab order skips buttons and links unless the user turns on "Press Tab
+// to highlight each item" — that is a browser setting, and a page cannot opt
+// into it. What the page IS responsible for is that the row is a real control
+// that responds to keyboard activation, which is asserted below on every engine
+// by focusing it and pressing Enter.
+if (engineName !== "webkit") {
+  let reached = false;
+  for (let i = 0; i < 120 && !reached; i += 1) {
+    // Matched on the row BUTTON, not on any focused element containing that
+    // text: the queue's scroll region is itself focusable and its textContent
+    // holds every row, so a text-only match stops one element too early.
+    const name = await page.evaluate(() => {
+      const el = document.activeElement;
+      return el !== null && el.classList.contains("ticket-link")
+        ? (el.textContent ?? "").trim()
+        : "";
+    });
+    if (name.includes("Unable to connect to the office VPN")) {
+      reached = true;
+      break;
+    }
+    await page.keyboard.press("Tab");
   }
-  await page.keyboard.press("Tab");
+  if (!reached) throw new Error("Could not reach a ticket row by keyboard");
+} else {
+  await page.evaluate(() => {
+    const row = [...document.querySelectorAll(".ticket-link")].find((el) =>
+      (el.textContent ?? "").includes("Unable to connect to the office VPN"),
+    );
+    if (row instanceof HTMLElement) row.focus();
+  });
 }
-if (!opened) throw new Error("Could not reach a ticket row by keyboard");
+
+// Activated by keyboard, on every engine. This is the part the page owns.
+const focusedRow = await page.evaluate(
+  () => document.activeElement?.classList.contains("ticket-link") === true,
+);
+if (!focusedRow) throw new Error("Ticket row did not take keyboard focus");
+await page.keyboard.press("Enter");
 await expect(page.locator(".detail-heading h1")).toBeVisible();
 
 // The focused element must be visible, not merely focused: a focus ring that
@@ -266,7 +316,7 @@ if (smallTargets.length > 0)
 
 if (errors.length) throw new Error(errors.join("\n"));
 console.log(
-  "PASS: filters, empty state, reply/status mapping, private notes, template isolation/creation, mobile width, keyboard journey, 200% zoom, touch targets, no browser errors.",
+  `PASS (${engineName}): filters, empty state, reply/status mapping, private notes, template isolation/creation, mobile width, keyboard journey, 200% zoom, touch targets, no browser errors.`,
 );
 await browser.close();
 await server.close();

@@ -13,7 +13,8 @@
     "format:check": "prettier --check .",
     "test": "node checks/smoke.mjs",
     "test:unit": "vitest run",
-    "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit && npm test && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit && npm test && npm run build",
+    "test:browsers": "SMOKE_BROWSER=firefox node checks/smoke.mjs && SMOKE_BROWSER=webkit node checks/smoke.mjs"
   },
   "keywords": [],
   "author": "",

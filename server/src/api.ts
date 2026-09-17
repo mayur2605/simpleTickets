@@ -23,11 +23,9 @@ import {
   type Priority,
   setOwner,
   openTicketsOwnedBy,
-  lastAssignee,
   stuckIntents,
   requeueIntent,
   getAttachment,
-  assignable,
   recordAudit,
   recentAudit,
   listParticipants,
@@ -47,7 +45,6 @@ import {
   recentFailures,
 } from "./store.ts";
 import { eligibleParticipants } from "./domain.ts";
-import { chooseAssignee } from "./assignment.ts";
 import { safeFilename } from "./storage.ts";
 import { buildReply } from "./reply.ts";
 import { transitionRule, STATUSES, type Status } from "./transitions.ts";
@@ -62,18 +59,7 @@ import {
   expiryFrom,
   isExpired,
 } from "./session.ts";
-import { notifyAssignee, assignUnassigned, type AppContext } from "./pipeline.ts";
-
-/**
- * Assignment candidates. `assignable` is what ANDs availability with account
- * access, in one place, so no route can forget the second half and hand work to
- * a disabled account.
- */
-async function workloads(
-  env: AppContext,
-): Promise<{ name: string; openTickets: number; available: boolean }[]> {
-  return assignable(await staffWorkloads(env.pool));
-}
+import { notifyAssignee, assignUnassigned, assignTicket, type AppContext } from "./pipeline.ts";
 
 /** Read and validate a JSON request body without casting it. */
 async function readJson(request: Request): Promise<Record<string, unknown>> {
@@ -98,10 +84,10 @@ async function redistribute(
 ): Promise<{ ticket: number; owner: string | null }[]> {
   const moved: { ticket: number; owner: string | null }[] = [];
   for (const ticket of await openTicketsOwnedBy(env.pool, name)) {
-    const candidates = (await workloads(env)).filter((member) => member.name !== name);
-    const owner = chooseAssignee(candidates, await lastAssignee(env.pool));
-    await setOwner(env.pool, ticket, owner, actor);
-    moved.push({ ticket, owner });
+    // Excluding the person being moved away from: without it they can win
+    // their own tickets back, since they are still `available` until the flag
+    // commits and are by then the least loaded.
+    moved.push({ ticket, owner: await assignTicket(env, ticket, actor, name) });
   }
   return moved;
 }
@@ -457,15 +443,20 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       if (ticketMatch[2] === "/assign") {
         // Only an admin may hand work to someone else; anyone signed in may
         // take an unowned ticket themselves.
+        // "auto" hands the choice back to the R07 rule, under the assignment
+        // lock, rather than naming somebody.
+        if (payload["auto"] === true) {
+          if (!identity.isAdmin) {
+            return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+          }
+          const chosen = await assignTicket(env, id, identity.name);
+          if (chosen !== null) await notifyAssignee(env, id, "assigned");
+          return Response.json({ ticket: id, owner: chosen, changed: chosen !== null });
+        }
+
         const requested = payload["owner"];
         const owner =
-          payload["auto"] === true
-            ? chooseAssignee(await workloads(env), await lastAssignee(env.pool))
-            : requested === null
-              ? null
-              : typeof requested === "string"
-                ? requested
-                : identity.name;
+          requested === null ? null : typeof requested === "string" ? requested : identity.name;
         if (owner !== identity.name && !identity.isAdmin) {
           return Response.json({ error: "Admin sign-in required" }, { status: 403 });
         }
@@ -520,6 +511,9 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           participants,
           supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
           body: text,
+          // R14, from the session. A client that named somebody else would be
+          // signing a colleague's name to its own message.
+          signedBy: author,
           threadMessageIds: await threadIds(env.pool, id),
           date: new Date(),
         });
@@ -577,6 +571,9 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           participants,
           supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
           body: text,
+          // R14, from the session. A client that named somebody else would be
+          // signing a colleague's name to its own message.
+          signedBy: author,
           threadMessageIds: await threadIds(env.pool, id),
           date: new Date(),
         });

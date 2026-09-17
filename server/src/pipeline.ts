@@ -64,6 +64,7 @@ import {
   recordAudit,
   setOwner,
   unassignedOpenTickets,
+  withAssignmentLock,
   ticketsNeedingReminder,
   ticketsReadyToClose,
   threadIds,
@@ -226,6 +227,32 @@ async function notify(
     recipient,
     messageId: message.messageId,
     payload: JSON.stringify(message),
+  });
+}
+
+/**
+ * Choose an owner and set it, under the assignment lock (R07).
+ *
+ * The read of workloads, the choice and the write happen inside one
+ * transaction, so two of these deciding at once cannot both pick the same
+ * least-loaded person. `exclude` is for redistribution: the person being moved
+ * away from must not win their own tickets back.
+ *
+ * Returns the chosen owner, or null when nobody qualifies.
+ */
+export async function assignTicket(
+  env: AppContext,
+  ticketId: number,
+  actor = "system",
+  exclude?: string,
+): Promise<string | null> {
+  return withAssignmentLock(env.pool, async (db) => {
+    const candidates = assignable(await staffWorkloads(db)).filter(
+      (member) => member.name !== exclude,
+    );
+    const owner = chooseAssignee(candidates, await lastAssignee(db));
+    await setOwner(db, ticketId, owner, actor);
+    return owner;
   });
 }
 
@@ -452,6 +479,11 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
         body: message.body,
         messageId: message.messageId,
         rawPath: await archive(env, message),
+        // R16: a new response episode, if IT has answered since the employee
+        // last wrote. Anchored to when WE received it, like the first one, and
+        // applied only if this actually opens an episode - appendReply decides,
+        // because only the database knows whether a response is already owed.
+        responseDue: responseDeadline(new Date()).toISOString(),
       });
       attachments += await saveAttachments(env, existingTicket, message);
 
@@ -490,6 +522,26 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
       if (detail !== null) {
         await noticeOversized(env, detail.ticket, message.oversized);
       }
+
+      // R10: a reply reopens a Resolved or Closed ticket and keeps its owner -
+      // but only if that owner can still work it. An account disabled since the
+      // ticket was resolved would otherwise own a live conversation nobody is
+      // reading, which is the failure redistribution exists to prevent.
+      const reopened = await getTicket(env.pool, existingTicket);
+      const owner = reopened?.ticket.owner ?? null;
+      const canStillWork =
+        owner !== null &&
+        assignable(await staffWorkloads(env.pool)).some(
+          (member) => member.name === owner && member.available,
+        );
+      if (!canStillWork) {
+        if ((await assignTicket(env, existingTicket)) === null) {
+          if (reopened !== null) await notifyAdmins(env, reopened.ticket, "unassigned");
+        } else {
+          await notifyAssignee(env, existingTicket, "assigned");
+        }
+      }
+
       // R15: the assignee is told about an employee reply. Queued, never sent
       // inline - the same reason the acknowledgement is queued.
       await notifyAssignee(env, existingTicket, "employee_reply");
@@ -514,14 +566,12 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
         // R07: fewest open tickets, round robin for ties. null when nobody is
         // available - the ticket stays visibly unassigned rather than being
         // handed to someone who cannot work it.
-        // R07/R24: fewest open tickets, round robin for ties, and only among
-        // people who are both available AND still have an account. null when
-        // nobody qualifies - the ticket stays visibly unassigned rather than
-        // being handed to someone who cannot work it, and admin is told below.
-        owner: chooseAssignee(
-          assignable(await staffWorkloads(env.pool)),
-          await lastAssignee(env.pool),
-        ),
+        // Assigned immediately below, under the assignment lock. Created
+        // unowned rather than owned-on-insert so the choice and the write
+        // happen inside one transaction with everything else deciding an
+        // owner - two ingests running at once would otherwise both read the
+        // same workloads and both pick the same person.
+        owner: null,
       },
       // R02: the acknowledgement is queued, never sent inline. Sending here
       // would put an SMTP round trip inside the ingestion loop, where a slow
@@ -563,14 +613,17 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
 
     const opened = { id: ticketId, subject: message.subject, requester };
     await noticeOversized(env, opened, message.oversized);
-    // R15: notify on assignment. Only fires when chooseAssignee found somebody.
-    if (!(await notifyAssignee(env, ticketId, "assigned"))) {
-      // R24: nobody available. An unassigned ticket has no assignee to remind,
-      // so without this it would sit silently until its deadline passed.
-      const detail = await getTicket(env.pool, ticketId);
-      if (detail !== null && detail.ticket.owner === null) {
-        await notifyAdmins(env, opened, "unassigned");
-      }
+
+    // R07/R24: fewest open tickets, round robin for ties, and only among people
+    // who are both available AND still have an account. null when nobody
+    // qualifies - the ticket stays visibly unassigned rather than being handed
+    // to someone who cannot work it, and every admin is told, because an
+    // unassigned ticket has no assignee to remind and would otherwise sit
+    // silently until its deadline passed.
+    if ((await assignTicket(env, ticketId)) === null) {
+      await notifyAdmins(env, opened, "unassigned");
+    } else {
+      await notifyAssignee(env, ticketId, "assigned");
     }
     created += 1;
   }
@@ -611,12 +664,7 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
 export async function assignUnassigned(env: AppContext, actor = "system"): Promise<number> {
   let assigned = 0;
   for (const ticket of await unassignedOpenTickets(env.pool)) {
-    const owner = chooseAssignee(
-      assignable(await staffWorkloads(env.pool)),
-      await lastAssignee(env.pool),
-    );
-    if (owner === null) break;
-    await setOwner(env.pool, ticket, owner, actor);
+    if ((await assignTicket(env, ticket, actor)) === null) break;
     await notifyAssignee(env, ticket, "assigned");
     assigned += 1;
   }

@@ -378,10 +378,37 @@ export async function appendReply(
     body: string;
     messageId: string | null;
     rawPath?: string | null;
+    /**
+     * The deadline this message would create if it opens a new response episode
+     * (R16). Computed by the caller from the shared business calendar; whether
+     * it is APPLIED is decided here, because only the database knows whether a
+     * response is already owed.
+     */
+    responseDue?: string;
   },
 ): Promise<void> {
   const now = new Date().toISOString();
   await withTransaction(pool, async (db) => {
+    // R16: "subsequent employee messages require an IT reply within four
+    // working hours", but "later employee follow-ups do not reset the first
+    // unanswered deadline". Both halves are this one statement: the deadline
+    // moves only when IT has replied since the last inbound message - which is
+    // to say, only when this message opens a NEW episode rather than adding to
+    // an open one. Run BEFORE the insert below, or the message being added
+    // becomes its own "most recent inbound" and no episode ever looks closed.
+    if (input.responseDue !== undefined) {
+      await db.query(
+        `UPDATE tickets t SET response_due = $2
+          WHERE t.id = $1
+            AND EXISTS (
+              SELECT 1 FROM messages m
+               WHERE m.ticket_id = t.id AND m.direction = 'outbound'
+                 AND m.created_at > COALESCE(
+                       (SELECT MAX(i.created_at) FROM messages i
+                         WHERE i.ticket_id = t.id AND i.direction = 'inbound'), ''))`,
+        [input.ticketId, input.responseDue],
+      );
+    }
     await db.query(
       `INSERT INTO messages (ticket_id, direction, author, body, message_id, created_at)
        VALUES ($1, 'inbound', $2, $3, $4, $5)`,
@@ -492,10 +519,27 @@ export interface TicketRow {
   messages: number;
 }
 
+/**
+ * "Has IT answered?" is per RESPONSE EPISODE, not per ticket (R16).
+ *
+ * The earliest outbound message AFTER the most recent inbound one. NULL means a
+ * response is owed right now. The obvious version - the earliest outbound
+ * message, full stop - answered the wrong question: once IT had replied once,
+ * the ticket read as answered forever, so an employee who wrote back a week
+ * later was owed nothing and appeared on no overdue list.
+ *
+ * The column keeps its name because `responseState` and the dashboard both
+ * speak it, and what they do with it is unchanged: null means waiting.
+ */
+const LAST_INBOUND = `COALESCE(
+         (SELECT MAX(i.created_at) FROM messages i
+           WHERE i.ticket_id = t.id AND i.direction = 'inbound'), '')`;
+
 const TICKET_COLUMNS = `t.id, t.subject, t.requester, t.status, t.priority, t.owner,
        t.response_due, t.created_at, t.updated_at,
        (SELECT MIN(m.created_at) FROM messages m
-         WHERE m.ticket_id = t.id AND m.direction = 'outbound') AS first_response_at,
+         WHERE m.ticket_id = t.id AND m.direction = 'outbound'
+           AND m.created_at > ${LAST_INBOUND}) AS first_response_at,
        (SELECT COUNT(*)::int FROM messages m WHERE m.ticket_id = t.id) AS messages`;
 
 /** Newest first, which is the order IT works in. */
@@ -836,6 +880,31 @@ export async function openTicketsOwnedBy(db: Db, name: string): Promise<number[]
 }
 
 /**
+ * Serialise a read-workloads / choose / assign sequence (R07).
+ *
+ * Without it, two assignments deciding at once both read the same workloads and
+ * both pick the same least-loaded person, who ends up with two tickets while
+ * somebody else gets none. Rare with one poller and five staff - which is why
+ * it went unnoticed - but it is the same hazard the outbox claim solves with
+ * FOR UPDATE SKIP LOCKED, and assignment had no equivalent.
+ *
+ * A transaction-scoped ADVISORY lock rather than row locks: the thing being
+ * protected is a decision made from several tables, not any one row, and the
+ * lock releases on commit or rollback with nothing to clean up.
+ *
+ * Everything inside must use the `db` handed in. Reading workloads on the pool
+ * while holding this would read outside the transaction and defeat the point.
+ */
+const ASSIGNMENT_LOCK = 0x5_11c_1e_d0;
+
+export async function withAssignmentLock<T>(pool: Pool, fn: (db: Db) => Promise<T>): Promise<T> {
+  return withTransaction(pool, async (db) => {
+    await db.query("SELECT pg_advisory_xact_lock($1)", [ASSIGNMENT_LOCK]);
+    return fn(db);
+  });
+}
+
+/**
  * Open tickets nobody owns, oldest first (R24).
  *
  * Oldest first because they have been waiting longest and their response
@@ -942,8 +1011,13 @@ export async function ticketsNeedingReminder(db: Db, now: Date): Promise<Reminde
         AND t.response_due <= $1
         AND t.status IN ('New', 'In Progress')
         AND NOT EXISTS (
+          -- Unanswered means unanswered SINCE the employee last wrote (R16),
+          -- the same definition first_response_at uses. Any outbound message
+          -- ever would have stopped reminding on a ticket whose employee wrote
+          -- back after IT had replied once.
           SELECT 1 FROM messages m
            WHERE m.ticket_id = t.id AND m.direction = 'outbound'
+             AND m.created_at > ${LAST_INBOUND}
         )
       ORDER BY t.response_due`,
     [now.toISOString()],

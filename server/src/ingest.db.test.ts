@@ -33,7 +33,7 @@ vi.mock("./imap.ts", () => ({
 }));
 
 const { testPool, truncate } = await import("./db/testing.ts");
-const { ingest } = await import("./pipeline.ts");
+const { ingest, assignTicket } = await import("./pipeline.ts");
 const { Storage } = await import("./storage.ts");
 const store = await import("./store.ts");
 
@@ -437,5 +437,131 @@ describe("nobody available (R24)", () => {
 
     const owners = (await store.listTickets(pool)).map((ticket) => ticket.owner);
     expect(owners).toEqual(["staff1", "staff1"]);
+  });
+});
+
+describe("reopening a ticket whose owner has gone (R10)", () => {
+  /**
+   * R10 says a reopened ticket keeps its previous owner "if available". An
+   * account disabled since the ticket was resolved would otherwise own a live
+   * conversation nobody is reading - the exact failure redistribution exists to
+   * prevent, arriving through a door redistribution does not watch.
+   */
+  it("moves it to somebody who can work it", async () => {
+    await store.addStaff(pool, "staff1", "staff1@allcheckservices.com", true);
+    await store.addStaff(pool, "staff2", "staff2@allcheckservices.com");
+    await anchor();
+    mailbox.uidNext = 2;
+    mailbox.messages = [mail(1)];
+    await ingest(env);
+
+    const owner = (await store.getTicket(pool, 1))?.ticket.owner;
+    expect(owner).not.toBeNull();
+    await store.setStatus(pool, 1, "Resolved", "staff1");
+    await store.setEnabled(pool, owner ?? "", false, "staff1");
+
+    mailbox.uidNext = 3;
+    mailbox.messages = [mail(2, { inReplyTo: "<in.1@mail.test>" })];
+    await ingest(env);
+
+    const after = await store.getTicket(pool, 1);
+    expect(after?.ticket.status).toBe("In Progress");
+    expect(after?.ticket.owner).not.toBe(owner);
+    expect(after?.ticket.owner).not.toBeNull();
+  });
+
+  it("leaves the owner alone when they can still work it", async () => {
+    await store.addStaff(pool, "staff1", "staff1@allcheckservices.com", true);
+    await anchor();
+    mailbox.uidNext = 2;
+    mailbox.messages = [mail(1)];
+    await ingest(env);
+    await store.setStatus(pool, 1, "Resolved", "staff1");
+
+    mailbox.uidNext = 3;
+    mailbox.messages = [mail(2, { inReplyTo: "<in.1@mail.test>" })];
+    await ingest(env);
+    expect((await store.getTicket(pool, 1))?.ticket.owner).toBe("staff1");
+  });
+});
+
+describe("assignment is serialised (R07)", () => {
+  /**
+   * Two assignments deciding at once both read the same workloads and both pick
+   * the same least-loaded person, who ends up with two tickets while somebody
+   * else gets none. Rare with one poller - which is why it went unnoticed - but
+   * it is the same hazard the outbox claim solves, and assignment had no
+   * equivalent lock until now.
+   *
+   * With two idle staff and two tickets assigned concurrently, the round-robin
+   * tie-break must hand out one each.
+   */
+  it("does not give two concurrent tickets to the same idle person", async () => {
+    await store.addStaff(pool, "staff1", "staff1@allcheckservices.com", true);
+    await store.addStaff(pool, "staff2", "staff2@allcheckservices.com");
+    await anchor();
+    mailbox.uidNext = 3;
+    mailbox.messages = [mail(1), mail(2, { messageId: "<in.2@mail.test>" })];
+    await ingest(env);
+
+    // Unassign both, then race the two assignments against each other.
+    await store.setOwner(pool, 1, null, "test");
+    await store.setOwner(pool, 2, null, "test");
+    const [first, second] = await Promise.all([
+      assignTicket(env, 1, "test"),
+      assignTicket(env, 2, "test"),
+    ]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first).not.toBe(second);
+  });
+});
+
+describe("malformed mail (T014)", () => {
+  it("logs an unparseable sender instead of opening a ticket", async () => {
+    await anchor();
+    mailbox.uidNext = 2;
+    mailbox.messages = [mail(1, { from: "Ananya Rao (no address at all)" })];
+    const summary = await ingest(env);
+    expect(summary.created).toBe(0);
+    const log = await pool.query<{ outcome: string }>(
+      `SELECT outcome FROM ingest_log WHERE uid = 1`,
+    );
+    // Rejected before parsing: a header with no address does not match the
+    // approved domain either, which is the earlier and stricter gate.
+    expect(["rejected_sender", "error"]).toContain(log.rows[0]?.outcome);
+  });
+
+  /**
+   * A message with nothing in it is still a message. Opening a ticket with an
+   * empty body is right: somebody wrote in, IT should see it, and inventing a
+   * placeholder would put words in the employee's mouth.
+   */
+  it("opens a ticket for an empty body and a missing subject", async () => {
+    await anchor();
+    mailbox.uidNext = 2;
+    mailbox.messages = [mail(1, { body: "", subject: "" })];
+    expect((await ingest(env)).created).toBe(1);
+    const detail = await store.getTicket(pool, 1);
+    expect(detail?.messages[0]?.body).toBe("");
+  });
+
+  // A message with no Message-ID cannot be threaded onto and cannot collide:
+  // the unique index on messages.message_id is partial for exactly this.
+  it("accepts a message with no Message-ID, twice over", async () => {
+    await anchor();
+    mailbox.uidNext = 3;
+    mailbox.messages = [
+      mail(1, { messageId: null }),
+      mail(2, { messageId: null, subject: "Another" }),
+    ];
+    expect((await ingest(env)).created).toBe(2);
+  });
+
+  it("survives a References header that is only punctuation", async () => {
+    await anchor();
+    mailbox.uidNext = 2;
+    mailbox.messages = [mail(1, { references: "<<<>>> , ; <>", inReplyTo: "not-an-id" })];
+    expect((await ingest(env)).created).toBe(1);
   });
 });

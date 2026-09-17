@@ -65,7 +65,7 @@ For UI work, run `npm run dev` in `prototype/` as well and use `http://localhost
 
 ## Commands
 
-**Server** (`server/`) — the gate is 245 unit tests and 130 against real PostgreSQL:
+**Server** (`server/`) — the gate is 248 unit tests and 153 against real PostgreSQL:
 
 ```bash
 npm run dev           # watch mode
@@ -145,6 +145,9 @@ Beyond the obvious ticket routes:
 - **`addNote` contains no outbox statement.** The constitution forbids an internal note reaching employee email, and the safest guarantee is that the sending machinery can never be handed one. `notification.ts` has the same shape: it cannot receive note text.
 - **The `Ticker`'s `#running` flag is the mutual exclusion the Durable Object gave by being single-threaded.** Two concurrent polls can claim the same outbox row.
 - **Notification Message-IDs carry a random component.** One reminder goes to the assignee and every admin in the same millisecond; a timestamp alone produced identical ids and the UNIQUE constraint silently dropped every recipient after the first.
+- **"Answered" is per response episode, not per ticket (R16).** `first_response_at` is the earliest outbound message *after the most recent inbound one*. The obvious version — the earliest outbound message, full stop — read a ticket IT had ever replied to as answered forever, so an employee writing back a week later was owed nothing and appeared on no overdue list. `ticketsNeedingReminder` uses the same definition.
+- **A follow-up while a response is already owed does not move the deadline (R16).** `appendReply` applies a new one only when an outbound message exists after the last inbound one — and runs that check BEFORE inserting, or the message being added becomes its own "most recent inbound".
+- **Assignment runs under `withAssignmentLock`.** Two assignments deciding at once both read the same workloads and both pick the same least-loaded person. The outbox claim solves this with `FOR UPDATE SKIP LOCKED`; assignment needs an advisory lock, because what it protects is a decision made from several tables rather than any one row.
 - **`author` comes from the session, never from the request body.** That is what makes the ticket history an audit trail rather than a record of what the client claimed. The same applies to every `actor` in `audit_events`.
 - **`findTicketByMessageIds` matching is not enough on its own: `isTicketParticipant` decides who may write.** Everybody in the company is on the approved domain, so a same-domain sender who learned a Message-ID would otherwise join any conversation, and IT would read it as the employee's own reply.
 - **`available` and `enabled` are ANDed in exactly one place, `assignable`.** A caller that forgot the second half would hand tickets to someone who no longer has an account, and nothing about the result would look wrong.
@@ -200,7 +203,11 @@ The dashboard still shows built-in **sample data** when no server answers — it
 
 ## The smoke test
 
-`prototype/checks/smoke.mjs` is a single linear Playwright script, not a test runner. It starts **its own Vite server on port 5174** (`strictPort`), so two concurrent runs collide.
+`prototype/checks/smoke.mjs` is a single linear Playwright script, not a test runner. It starts **its own Vite server** on a port chosen by engine — 5174/5175/5176 (`strictPort`) — so the three can run at once but two runs of the same engine collide.
+
+`SMOKE_BROWSER` picks the engine: chromium (default, the main gate), firefox or webkit. `npm run test:browsers` runs the other two locally; CI runs them as their own matrix job. Screenshots are written only from chromium, since three engines overwriting them in turn would make the committed files depend on which job finished last.
+
+**WebKit skips buttons and links in its tab order** unless the user turns on Safari's "Press Tab to highlight each item". That is a browser setting a page cannot opt into, so the smoke test's tab WALK runs on chromium and firefox; keyboard ACTIVATION — focus the row, press Enter — runs on all three, because that is the part the page owns.
 
 - It asserts **exact row and item counts** against the `seed` and `initialTemplates` arrays in `main.tsx`. Changing that sample data breaks the test — update both together.
 - It sets `VITE_PROXY_TARGET` to a dead port so the dashboard cannot find a backend and stays on sample data. Without that the test would pass or fail depending on whether a real server happened to be running on 8787.
@@ -276,7 +283,5 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 - **Login leaks account existence by timing**, accepted and recorded — see `docs/stack-validation.md`.
 - What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity *detection* (open point 4 — the `ambiguous` state and the resend path exist; the detection rule does not).
 - **Backups sit on the same disk as the database.** That is not a backup against losing the disk. An off-machine copy waits on the hosting decision (PRD open point 9).
-- **Emailed verification codes and account recovery are not built** (R06), and a reopened ticket keeps an owner whose account may now be disabled (R10).
-- **Replies carry no per-staff signature** (R14), and response *episodes* after the first are not modelled (R16).
-- **Assignment is not serialised** against concurrent workload changes. The outbox claim is; assignment has no equivalent lock.
-- **The inherited stylesheets are desktop-first.** New CSS is mobile-first; `style.css` and `brand.css` are not, and inverting 1651 lines of append-only design iterations is a rewrite with regression risk and no behavioural gain. Screen-reader passes with an actual screen reader, and Firefox/WebKit runs, are also still open (T028).
+- **Emailed verification codes and account recovery are not built** (R06).
+- **The inherited stylesheets are desktop-first.** New CSS is mobile-first; `style.css` and `brand.css` are not, and inverting 1651 lines of append-only design iterations is a rewrite with regression risk and no behavioural gain. A pass with an actual screen reader is also still open — no automated check substitutes for it (T028).

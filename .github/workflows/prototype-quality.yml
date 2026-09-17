@@ -20,3 +20,31 @@ jobs:
       - run: npm run verify
         env:
           CI: 'true'
+
+  # Firefox and WebKit, separately (T028). Separate because installing two more
+  # engines costs more than the rest of this workflow put together, and the
+  # bugs they catch are layout and CSS ones that do not appear between commits
+  # the way a failing unit test does. The same smoke script, a different engine.
+  browsers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [firefox, webkit]
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: prototype/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run build
+      - run: node checks/smoke.mjs
+        env:
+          CI: 'true'
+          SMOKE_BROWSER: ${{ matrix.browser }}

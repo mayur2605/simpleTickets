@@ -13,9 +13,9 @@ Three columns of honesty are worth naming before the table, because the word
 - **Inherited** — it worked on the Cloudflare deployment and the code was ported.
   That is evidence about the old system, not this one.
 
-The gate behind all of it: **245 unit tests and 130 against real PostgreSQL** in
+The gate behind all of it: **248 unit tests and 153 against real PostgreSQL** in
 `server/`, **19 unit tests plus a browser smoke run and a production build** in
-`prototype/`. Re-run it rather than trusting this sentence.
+`prototype/`, with the same smoke run repeated on Firefox and WebKit in their own CI job. Re-run it rather than trusting this sentence.
 
 ---
 
@@ -27,16 +27,16 @@ The gate behind all of it: **245 unit tests and 130 against real PostgreSQL** in
 | **R04** | IT works only in the dashboard | **Tested** | No staff email relay exists; inbound staff mail is rejected like any other unapproved sender, and a reply to a one-way notification is recorded `notification_reply` rather than threaded. |
 | **R05** | Admin creates and disables accounts; disabling ends access | **Tested** | `setEnabled` flips the flag and deletes that account's sessions in one transaction; the API redistributes their open tickets in the same call. Sign-in is refused with the same message as a wrong password. An admin cannot disable their own account. |
 | **R06** | Password sign-in, plus emailed verification codes | **Partly** | Passwords: scrypt (N=2¹⁶, r=8, p=2), per-account throttling with a 15-minute lockout, HttpOnly/Secure/SameSite=Strict cookies with hashed tokens. **Emailed verification codes are not built.** |
-| **R07** | Fewest open tickets, round robin for ties | **Proved here** | Applied on ingest and from the dashboard. `assignable` ANDs availability with account access in one place, so no caller can hand work to a disabled account. |
+| **R07** | Fewest open tickets, round robin for ties | **Proved here** | Applied on ingest and from the dashboard, and serialised by an advisory lock — two assignments deciding at once would otherwise both pick the same least-loaded person. Asserted by racing two against two idle staff. `assignable` ANDs availability with account access in one place, so no caller can hand work to a disabled account. |
 | **R08** | Admin-only availability; skip unavailable staff; redistribute | **Tested** | Redistribution moves tickets one at a time, re-reading workloads each round — one pass would dump the queue on whoever was least loaded at the start. Restoring availability picks up unowned tickets and only those. A ticket nobody can take emails every admin. |
 | **R09** | Five statuses; Waiting for Employee needs an emailed request | **Tested** | `transitionRule` is the whole of it: which changes are internal, which require a message, and which are refused. Empty reply bodies are rejected. |
-| **R10** | Employee reply reopens; employees cannot close by email | **Tested** | Reopening keeps the owner and does not move the deadline, asserted for both the requester and a CC participant. No employee-facing text instructs closure by replying — the auto-close message says the opposite. **Reassignment when the original owner has gone is not built.** |
+| **R10** | Employee reply reopens; employees cannot close by email | **Tested** | Reopening keeps the owner — but only one who can still work it. An account disabled since the ticket was resolved would otherwise own a live conversation nobody is reading. No employee-facing text instructs closure by replying; the auto-close message says the opposite. |
 | **R11** | Four priorities, same deadline | **Tested** | Default Normal; the deadline calculation does not read priority. |
 | **R12** | 5 MB of attachments per email; oversized asks for smaller files | **Tested** | The budget is enforced on bytes actually READ, not on the sizes the sender's structure claims. The employee is told which files did not arrive, once per ticket. Storing and reading 5 MB measured at 6 ms and 2 ms. The sender's filename never becomes a path. |
 | **R13** | Internal notes never emailed, never an IT response | **Structural** | `addNote` contains no outbox statement and `notification.ts` has no parameter through which note text could arrive. Asserted with participants on the ticket: a note queues nothing at all. |
-| **R14** | Replies composed in the dashboard, sent from the support address | **Partly** | Composed and queued correctly, with participants copied in header and envelope. **Two gaps:** no per-staff signature, and replies go out from the Gmail address rather than the company one (PRD open point 5). |
+| **R14** | Replies composed in the dashboard, sent from the support address | **Partly** | Composed and queued correctly, with participants copied in header and envelope, and signed with the responding staff member's name — taken from the session, so a client cannot sign a colleague's name to its own message. The signature is on the wire and not in the ticket history, where the author column already says who wrote it. **One gap:** replies go out from the Gmail address rather than the company one (PRD open point 5). |
 | **R15** | Notify the assignee on assignment, reply and overdue | **Tested** | Four kinds, each linking to the ticket. Message-IDs carry a random component after a timestamp alone collided and the UNIQUE constraint silently dropped every recipient after the first. **Not delivered to a person:** `MAIL_SEND` has never been on here. |
-| **R16** | Four working hours for the first response | **Tested** | 19 cases covering the four spec examples, the 09:00/18:00 boundaries, Saturday-to-Monday carry and the no-postponement rule. **Response episodes after the first are not modelled.** |
+| **R16** | Four working hours for the first response and for later employee messages | **Tested** | 19 calendar cases, plus 12 on episodes. "Answered" is per episode: the earliest outbound message after the most recent inbound one. A new employee message sets a new deadline only when IT replied since the last one — a follow-up while a response is already owed leaves the existing deadline alone, or an anxious employee writing three times pushes their own deadline out each time. |
 | **R17** | Mon–Sat 09:00–18:00 IST; Sunday due Monday noon | **Tested** | One business-calendar module, imported by the server from the prototype rather than copied — two implementations would drift and the UI would show a deadline the system does not enforce. |
 | **R18** | Overdue reminders every four working hours to assignee and admin | **Tested** | Business time, not elapsed: a reminder every four clock hours would send four overnight to nobody reading. Recipients deduplicated, so an admin who is also the assignee is told once. |
 | **R19** | Auto-close 72 elapsed hours after acceptance of the resolution | **Tested** | Anchored to `outbox.accepted_at`, not the button press. A bounce pauses it; a resend clears the acceptance so the clock re-anchors to the delivery that arrived. Manual and automatic closure use the same machinery. |
@@ -74,10 +74,8 @@ summary is:
 | | What is missing |
 | --- | --- |
 | R06 | Emailed verification codes; account recovery |
-| R10 | Reassignment on reopening when the original owner has gone |
-| R14 | Per-staff signature; replies still go out from the Gmail address |
+| R14 | Replies still go out from the Gmail address |
 | R15 | Nothing has been delivered — `MAIL_SEND` is off |
-| R16 | Response episodes after the first |
 | R23 | Hosting undecided, by choice |
 
 Each is carried in `specs/001-email-ticketing/tasks.md` against its task.

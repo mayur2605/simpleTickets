@@ -25,6 +25,16 @@ export interface ReplyInput {
   supportAddress: string;
   /** What IT wrote. Must not be empty. */
   body: string;
+  /**
+   * The staff member answering (R14: "signed with the responding staff member's
+   * name").
+   *
+   * Appended here rather than typed by each person, so it cannot be forgotten
+   * and cannot claim somebody else - the caller takes it from the session. An
+   * automatic message passes nothing, because "IT Support" signing an
+   * auto-closure is a fiction: nobody pressed anything.
+   */
+  signedBy?: string;
   /** Message-IDs already on this thread, oldest first. */
   threadMessageIds: string[];
   date: Date;
@@ -44,12 +54,17 @@ export function buildReply(input: ReplyInput): OutgoingMessage {
     (address) => address.toLowerCase() !== input.requester.toLowerCase(),
   );
 
+  const signed =
+    input.signedBy === undefined || input.signedBy.trim() === ""
+      ? input.body
+      : `${input.body.replace(/\s+$/, "")}\n\n--\n${input.signedBy}\nIT Support`;
+
   const message: OutgoingMessage = {
     from: input.supportAddress,
     to: [input.requester],
     ...(copied.length > 0 ? { cc: copied } : {}),
     subject: subjectWithTicket(input.ticketNumber, input.ticketSubject),
-    body: input.body,
+    body: signed,
     messageId: `<reply.${String(input.ticketNumber)}.${String(input.date.getTime())}@simpletickets>`,
     date: input.date,
     // Deliberately NOT autoSubmitted: a person pressed send. Marking it

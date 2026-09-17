@@ -668,3 +668,81 @@ describe("the author is the session, never the request", () => {
     expect(requested?.actor).toBe("staff2");
   });
 });
+
+describe("the signature (R14)", () => {
+  /**
+   * R14: "signed with the responding staff member's name". Taken from the
+   * session like `author`, so a client cannot sign a colleague's name to its
+   * own message.
+   */
+  it("signs the outgoing message with the session's name", async () => {
+    const id = await ticket();
+    await api(`/api/tickets/${String(id)}/reply`, {
+      as: await sessionFor("staff2"),
+      method: "POST",
+      body: { body: "We have ordered a new roller.", signedBy: "staff1" },
+    });
+    const queued = await pool.query<{ payload: string }>(
+      `SELECT payload FROM outbox WHERE intent = 'reply'`,
+    );
+    const payload = queued.rows[0]?.payload ?? "";
+    expect(payload).toContain("staff2");
+    expect(payload).not.toContain("staff1");
+  });
+
+  /**
+   * The signature is on the WIRE, not in the ticket history. IT already knows
+   * who they are, and repeating it under every message in the dashboard is
+   * noise beside a row that already carries the author.
+   */
+  it("keeps the signature out of the stored message", async () => {
+    const id = await ticket();
+    await api(`/api/tickets/${String(id)}/reply`, {
+      as: await sessionFor("staff2"),
+      method: "POST",
+      body: { body: "We have ordered a new roller." },
+    });
+    const detail = await getTicket(pool, id);
+    expect(detail?.messages.find((m) => m.direction === "outbound")?.body).toBe(
+      "We have ordered a new roller.",
+    );
+  });
+});
+
+describe("automatic assignment (R07)", () => {
+  it("hands the choice to the rule, and only for an admin", async () => {
+    const id = await ticket();
+    expect(
+      (
+        await api(`/api/tickets/${String(id)}/assign`, {
+          as: await sessionFor("staff2"),
+          method: "POST",
+          body: { auto: true },
+        })
+      ).status,
+    ).toBe(403);
+
+    const result = await api(`/api/tickets/${String(id)}/assign`, {
+      as: await sessionFor("staff1"),
+      method: "POST",
+      body: { auto: true },
+    });
+    expect(result.body["owner"]).not.toBeNull();
+    expect((await getTicket(pool, id))?.ticket.owner).toBe(result.body["owner"]);
+  });
+
+  // Nobody available means nobody assigned, not somebody assigned anyway.
+  it("returns no owner when nobody can take it", async () => {
+    const id = await ticket();
+    const admin = await sessionFor("staff1");
+    for (const who of ["staff1", "staff2"]) {
+      await api("/api/staff", { as: admin, method: "POST", body: { name: who, available: false } });
+    }
+    const result = await api(`/api/tickets/${String(id)}/assign`, {
+      as: admin,
+      method: "POST",
+      body: { auto: true },
+    });
+    expect(result.body["owner"]).toBeNull();
+  });
+});
