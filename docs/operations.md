@@ -79,6 +79,25 @@ five failures of either kind. Waiting is the fix. If mail itself is broken, set
 `LOGIN_CODES=off` and restart — that is the documented escape hatch, and it is
 why the setting exists rather than the behaviour being unconditional.
 
+### If somebody forgets their password
+
+An admin sets a new one from the dashboard, or with
+`POST /api/staff/password`. There is deliberately no self-service reset: with
+five people who share an office, "ask the admin" solves the problem that an
+emailed reset link would solve, and an emailed reset link means anyone who can
+read a mailbox can take an account.
+
+**If the ADMIN forgets theirs**, nobody can reset it through the API — only an
+admin session may provision a password, and that is the safe direction. The
+escape hatch is the machine:
+
+```bash
+cd server && npm run db:seed -- --password staff1
+```
+
+It prompts, and never takes the password as an argument. Whoever can run it
+already has the database, so it grants no access they did not have.
+
 ---
 
 ## What to watch

@@ -187,8 +187,16 @@ A local prototype privacy regression was fixed and verified; see
   The code email carries no link, deliberately: a sign-in email with a clickable link is the
   shape of every credential phishing message ever sent, and training staff to click one is
   worse than the inconvenience of typing six digits.
-  **Not done:** account recovery. Expiry and reuse are now exercised against a real database
-  and a supplied clock rather than unit tested alone.
+  **Account recovery is deliberately not self-service**, and that is a judgement worth
+  stating rather than leaving as an unticked box. With five people who share an office, "ask
+  the admin" solves what an emailed reset link would solve, and an emailed reset link means
+  anyone who can read a mailbox can take an account. An admin resets a password from the
+  dashboard; if the ADMIN forgets theirs, the escape hatch is
+  `npm run db:seed -- --password staff1` from the machine, which is the same deliberate
+  deadlock that bootstraps the first password. Documented in `docs/operations.md`. Revisit if
+  the team stops sharing a room.
+  Expiry and reuse are now exercised against a real database and a supplied clock rather
+  than unit tested alone.
 - [x] T009 Implement shared business calendar and deadline calculation; test all spec boundary examples and Sunday new-ticket/reply behavior and preservation of earlier pending deadlines.
   Done: `prototype/src/domain/business-calendar.ts`, 19 passing Vitest cases covering the four spec examples, the working-window boundaries at 09:00/18:00, Saturday-to-Monday carry, and the no-postponement rule. Domain rule only — no ticket store consumes it yet; wiring belongs to T007/T016.
 
