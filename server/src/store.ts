@@ -14,6 +14,7 @@
  */
 import type { Pool } from "pg";
 import { type Db, withTransaction } from "./db/pool.ts";
+import type { StaffWorkload } from "./assignment.ts";
 
 export interface Checkpoint {
   uidValidity: string;
@@ -109,7 +110,13 @@ export async function createTicket(
 export async function recordSkip(
   db: Db,
   uid: number,
-  outcome: "rejected_sender" | "auto_reply" | "bounce" | "error" | "notification_reply",
+  outcome:
+    | "rejected_sender"
+    | "auto_reply"
+    | "bounce"
+    | "error"
+    | "notification_reply"
+    | "not_a_participant",
   detail: string,
 ): Promise<void> {
   await db.query(
@@ -516,6 +523,21 @@ export interface TicketDetail {
   ticket: TicketRow;
   messages: TicketMessage[];
   attachments: AttachmentRow[];
+  /** Everyone copied on this ticket, removed ones included (R25). */
+  participants: ParticipantRow[];
+  /** Who did what to it (R08). Separate from `messages`, which is what was said. */
+  audit: AuditRow[];
+  /** Outgoing mail still on the way, so a pending transition is visible (T016). */
+  pending: PendingIntent[];
+}
+
+/** An outbox row a ticket is still waiting on, for the dashboard indicator. */
+export interface PendingIntent {
+  id: number;
+  intent: OutboxIntent;
+  state: string;
+  pending_status: string | null;
+  last_error: string | null;
 }
 
 export async function getTicket(db: Db, id: number): Promise<TicketDetail | null> {
@@ -531,7 +553,24 @@ export async function getTicket(db: Db, id: number): Promise<TicketDetail | null
        FROM messages WHERE ticket_id = $1 ORDER BY id`,
     [id],
   );
-  return { ticket, messages: messages.rows, attachments: await listAttachments(db, id) };
+  // Anything not yet accepted, plus anything that failed. R28 holds a status
+  // change against its message, so "Resolved once this sends" has to be
+  // visible - otherwise IT presses Resolve, sees New, and presses it again.
+  const pending = await db.query<PendingIntent>(
+    `SELECT id, intent, state, pending_status, last_error
+       FROM outbox
+      WHERE ticket_id = $1 AND state <> 'accepted'
+      ORDER BY id`,
+    [id],
+  );
+  return {
+    ticket,
+    messages: messages.rows,
+    attachments: await listAttachments(db, id),
+    participants: await participantHistory(db, id),
+    audit: await ticketAudit(db, id),
+    pending: pending.rows,
+  };
 }
 
 /**
@@ -625,9 +664,27 @@ export interface StaffRow {
   name: string;
   email: string | null;
   available: boolean;
+  /** Account access (R24). Distinct from `available`; see setEnabled. */
+  enabled: boolean;
   is_admin: boolean;
   has_password: boolean;
   openTickets: number;
+}
+
+/**
+ * Turn staff rows into assignment candidates (R07, R24).
+ *
+ * `available` and `enabled` are separate columns and are ANDed exactly here,
+ * once, rather than at each caller — a caller that forgot the second half
+ * would hand tickets to someone who no longer has an account, and nothing
+ * about the result would look wrong.
+ */
+export function assignable(staff: readonly StaffRow[]): StaffWorkload[] {
+  return staff.map((member) => ({
+    name: member.name,
+    openTickets: member.openTickets,
+    available: member.available && member.enabled,
+  }));
 }
 
 /**
@@ -643,7 +700,7 @@ export interface StaffRow {
  */
 export async function staffWorkloads(db: Db): Promise<StaffRow[]> {
   const { rows } = await db.query<StaffRow>(
-    `SELECT s.name, s.email, s.available, s.is_admin,
+    `SELECT s.name, s.email, s.available, s.enabled, s.is_admin,
             (s.password_hash IS NOT NULL) AS has_password,
             (SELECT COUNT(*)::int FROM tickets t
               WHERE t.owner = s.name
@@ -676,31 +733,66 @@ export async function addStaff(
   );
 }
 
-export async function setAvailability(db: Db, name: string, available: boolean): Promise<boolean> {
+export async function setAvailability(
+  db: Db,
+  name: string,
+  available: boolean,
+  actor = "system",
+): Promise<boolean> {
   const result = await db.query(`UPDATE staff SET available = $1 WHERE name = $2`, [
     available,
     name,
   ]);
-  return (result.rowCount ?? 0) > 0;
+  if ((result.rowCount ?? 0) === 0) return false;
+  await recordAudit(db, {
+    actor,
+    action: available ? "made_available" : "made_unavailable",
+    detail: name,
+  });
+  return true;
 }
 
-/** Assign or unassign a ticket (R07, R24). */
-export async function setOwner(db: Db, id: number, owner: string | null): Promise<boolean> {
-  const result = await db.query(`UPDATE tickets SET owner = $1, updated_at = $2 WHERE id = $3`, [
-    owner,
-    new Date().toISOString(),
-    id,
-  ]);
-  return (result.rowCount ?? 0) > 0;
+/**
+ * Assign or unassign a ticket (R07, R24).
+ *
+ * The move is audited in the same statement batch. Assignment changes left no
+ * trace at all before this: the message history records what was said, never
+ * who the ticket passed through, which is the question actually asked when a
+ * ticket has been sitting untouched for a week.
+ */
+export async function setOwner(
+  db: Db,
+  id: number,
+  owner: string | null,
+  actor = "system",
+): Promise<boolean> {
+  const result = await db.query(
+    `UPDATE tickets SET owner = $1, updated_at = $2 WHERE id = $3 AND owner IS DISTINCT FROM $1`,
+    [owner, new Date().toISOString(), id],
+  );
+  if ((result.rowCount ?? 0) === 0) return false;
+  await recordAudit(db, {
+    ticketId: id,
+    actor,
+    action: owner === null ? "unassigned" : "assigned",
+    detail: owner,
+  });
+  return true;
 }
 
 /** Apply a status that needs no email (R09). */
-export async function setStatus(db: Db, id: number, status: string): Promise<void> {
+export async function setStatus(
+  db: Db,
+  id: number,
+  status: string,
+  actor = "system",
+): Promise<void> {
   await db.query(`UPDATE tickets SET status = $1, updated_at = $2 WHERE id = $3`, [
     status,
     new Date().toISOString(),
     id,
   ]);
+  await recordAudit(db, { ticketId: id, actor, action: "status", detail: status });
 }
 
 /**
@@ -713,6 +805,21 @@ export async function openTicketsOwnedBy(db: Db, name: string): Promise<number[]
       WHERE owner = $1 AND status IN ('New', 'In Progress', 'Waiting for Employee')
       ORDER BY id`,
     [name],
+  );
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Open tickets nobody owns, oldest first (R24).
+ *
+ * Oldest first because they have been waiting longest and their response
+ * deadlines are closest.
+ */
+export async function unassignedOpenTickets(db: Db): Promise<number[]> {
+  const { rows } = await db.query<{ id: number }>(
+    `SELECT id FROM tickets
+      WHERE owner IS NULL AND status IN ('New', 'In Progress', 'Waiting for Employee')
+      ORDER BY id`,
   );
   return rows.map((row) => row.id);
 }
@@ -903,11 +1010,12 @@ export interface StaffAccount {
   password_hash: string | null;
   is_admin: boolean;
   available: boolean;
+  enabled: boolean;
 }
 
 export async function findStaff(db: Db, name: string): Promise<StaffAccount | null> {
   const { rows } = await db.query<StaffAccount>(
-    `SELECT name, password_hash, is_admin, available FROM staff WHERE name = $1`,
+    `SELECT name, password_hash, is_admin, available, enabled FROM staff WHERE name = $1`,
     [name],
   );
   return rows[0] ?? null;
@@ -948,11 +1056,18 @@ export interface SessionRow {
   staff_name: string;
   expires_at: string;
   is_admin: boolean;
+  /**
+   * Read on every request, not only at sign-in. Disabling an account deletes
+   * its sessions, so this is belt and braces — but the belt is a DELETE racing
+   * an in-flight request, and the cost of checking is a column on a join that
+   * already happens.
+   */
+  enabled: boolean;
 }
 
 export async function findSession(db: Db, tokenHash: string): Promise<SessionRow | null> {
   const { rows } = await db.query<SessionRow>(
-    `SELECT s.staff_name, s.expires_at, st.is_admin
+    `SELECT s.staff_name, s.expires_at, st.is_admin, st.enabled
        FROM sessions s JOIN staff st ON st.name = s.staff_name
       WHERE s.token_hash = $1`,
     [tokenHash],
@@ -978,4 +1093,326 @@ export async function recentFailures(db: Db, name: string, since: string): Promi
     [name, since],
   );
   return rows[0]?.failures ?? 0;
+}
+
+/* -------------------------------------------------------------- audit trail */
+
+/**
+ * Who did what (R08, R24, R25).
+ *
+ * Written alongside the change it describes, inside the caller's transaction
+ * wherever one exists — an audit entry that commits separately can survive a
+ * change that rolled back, which is worse than no entry at all.
+ */
+export interface AuditEntry {
+  ticketId?: number | null;
+  actor: string;
+  action: string;
+  detail?: string | null;
+}
+
+export async function recordAudit(db: Db, entry: AuditEntry): Promise<void> {
+  await db.query(
+    `INSERT INTO audit_events (ticket_id, actor, action, detail, at) VALUES ($1, $2, $3, $4, $5)`,
+    [
+      entry.ticketId ?? null,
+      entry.actor,
+      entry.action,
+      entry.detail ?? null,
+      new Date().toISOString(),
+    ],
+  );
+}
+
+export interface AuditRow {
+  id: number;
+  ticket_id: number | null;
+  actor: string;
+  action: string;
+  detail: string | null;
+  at: string;
+}
+
+export async function ticketAudit(db: Db, ticketId: number): Promise<AuditRow[]> {
+  const { rows } = await db.query<AuditRow>(
+    `SELECT id, ticket_id, actor, action, detail, at
+       FROM audit_events WHERE ticket_id = $1 ORDER BY id`,
+    [ticketId],
+  );
+  return rows;
+}
+
+/** The whole trail, newest first. For the admin activity view. */
+export async function recentAudit(db: Db, limit = 200): Promise<AuditRow[]> {
+  const { rows } = await db.query<AuditRow>(
+    `SELECT id, ticket_id, actor, action, detail, at
+       FROM audit_events ORDER BY id DESC LIMIT $1`,
+    [limit],
+  );
+  return rows;
+}
+
+/* ----------------------------------------------------------- account access */
+
+/**
+ * Enable or disable an account (R24).
+ *
+ * Disabling revokes access in the same transaction as it sets the flag: the
+ * session rows are deleted rather than left to expire, because an account that
+ * is disabled but still has a live cookie is not disabled. Availability is a
+ * separate column and is deliberately untouched here — someone on leave keeps
+ * their login, and a leaver does not keep one.
+ *
+ * Returns null when there is no such account, so the caller can answer 404
+ * rather than reporting a change that did not happen.
+ */
+export async function setEnabled(
+  pool: Pool,
+  name: string,
+  enabled: boolean,
+  actor: string,
+): Promise<{ sessionsRevoked: number } | null> {
+  return withTransaction(pool, async (db) => {
+    const updated = await db.query(`UPDATE staff SET enabled = $1 WHERE name = $2`, [
+      enabled,
+      name,
+    ]);
+    if ((updated.rowCount ?? 0) === 0) return null;
+
+    let sessionsRevoked = 0;
+    if (!enabled) {
+      const removed = await db.query(`DELETE FROM sessions WHERE staff_name = $1`, [name]);
+      sessionsRevoked = removed.rowCount ?? 0;
+    }
+    await recordAudit(db, {
+      actor,
+      action: enabled ? "account_enabled" : "account_disabled",
+      detail: name,
+    });
+    return { sessionsRevoked };
+  });
+}
+
+/* ------------------------------------------------------- CC participants */
+
+export interface ParticipantRow {
+  address: string;
+  added_by: string;
+  added_at: string;
+  removed_at: string | null;
+}
+
+/** Everyone currently on the ticket, lower-cased, oldest first (R25). */
+export async function listParticipants(db: Db, ticketId: number): Promise<string[]> {
+  const { rows } = await db.query<{ address: string }>(
+    `SELECT address FROM ticket_participants
+      WHERE ticket_id = $1 AND removed_at IS NULL ORDER BY added_at, address`,
+    [ticketId],
+  );
+  return rows.map((row) => row.address);
+}
+
+/** Including the removed, for the dashboard and the audit view. */
+export async function participantHistory(db: Db, ticketId: number): Promise<ParticipantRow[]> {
+  const { rows } = await db.query<ParticipantRow>(
+    `SELECT address, added_by, added_at, removed_at FROM ticket_participants
+      WHERE ticket_id = $1 ORDER BY added_at, address`,
+    [ticketId],
+  );
+  return rows;
+}
+
+/**
+ * Add participants, audited, skipping anyone already there.
+ *
+ * Returns only those actually added. A caller that notified everyone it passed
+ * in would email people who have been on the ticket for a week every time the
+ * requester leaves them on a Cc line — which R25 forbids in as many words.
+ *
+ * Re-adding somebody previously removed clears `removed_at`: IT removing a
+ * person and later putting them back is a deliberate act both times, and each
+ * is recorded.
+ */
+export async function addParticipants(
+  pool: Pool,
+  ticketId: number,
+  addresses: readonly string[],
+  addedBy: string,
+): Promise<string[]> {
+  if (addresses.length === 0) return [];
+  const now = new Date().toISOString();
+  return withTransaction(pool, async (db) => {
+    const added: string[] = [];
+    for (const raw of addresses) {
+      const address = raw.toLowerCase();
+      const { rowCount } = await db.query(
+        `INSERT INTO ticket_participants (ticket_id, address, added_by, added_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (ticket_id, address) DO UPDATE
+            SET removed_at = NULL, added_by = excluded.added_by, added_at = excluded.added_at
+          WHERE ticket_participants.removed_at IS NOT NULL`,
+        [ticketId, address, addedBy, now],
+      );
+      if ((rowCount ?? 0) === 0) continue;
+      added.push(address);
+      await recordAudit(db, {
+        ticketId,
+        actor: addedBy,
+        action: "participant_added",
+        detail: address,
+      });
+    }
+    return added;
+  });
+}
+
+/**
+ * Remove a participant (R25): only ever explicitly, never because an address
+ * stopped appearing in a Cc header.
+ */
+export async function removeParticipant(
+  pool: Pool,
+  ticketId: number,
+  address: string,
+  actor: string,
+): Promise<boolean> {
+  return withTransaction(pool, async (db) => {
+    const { rowCount } = await db.query(
+      `UPDATE ticket_participants SET removed_at = $1
+        WHERE ticket_id = $2 AND address = $3 AND removed_at IS NULL`,
+      [new Date().toISOString(), ticketId, address.toLowerCase()],
+    );
+    if ((rowCount ?? 0) === 0) return false;
+    await recordAudit(db, {
+      ticketId,
+      actor,
+      action: "participant_removed",
+      detail: address.toLowerCase(),
+    });
+    return true;
+  });
+}
+
+/**
+ * May this address write into this ticket (R25)?
+ *
+ * True for the requester and for any current participant. Being on the approved
+ * domain is NOT enough: that authorises opening a ticket of your own, not
+ * joining a colleague's, and a company-wide domain check would let anybody read
+ * and answer anybody else's IT correspondence by guessing a Message-ID.
+ */
+export async function isTicketParticipant(
+  db: Db,
+  ticketId: number,
+  address: string,
+): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `SELECT 1 FROM tickets WHERE id = $1 AND LOWER(requester) = $2
+      UNION ALL
+     SELECT 1 FROM ticket_participants
+      WHERE ticket_id = $1 AND address = $2 AND removed_at IS NULL
+      LIMIT 1`,
+    [ticketId, address.toLowerCase()],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/* --------------------------------------------------------- reply templates */
+
+export interface TemplateRow {
+  id: number;
+  name: string;
+  body: string;
+  /** The status sending this template requests, or null for no change. */
+  maps_to: string | null;
+}
+
+export async function listTemplates(db: Db): Promise<TemplateRow[]> {
+  const { rows } = await db.query<TemplateRow>(
+    `SELECT id, name, body, maps_to FROM reply_templates ORDER BY id`,
+  );
+  return rows;
+}
+
+export async function getTemplate(db: Db, id: number): Promise<TemplateRow | null> {
+  const { rows } = await db.query<TemplateRow>(
+    `SELECT id, name, body, maps_to FROM reply_templates WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Create or rename-in-place a template (R24, admin only — enforced at the API).
+ *
+ * Editing a template deliberately does not touch anything already sent: the
+ * outgoing text is copied into `messages` and into the outbox payload at send
+ * time, so a later edit cannot rewrite what an employee has already received.
+ */
+export async function upsertTemplate(
+  db: Db,
+  input: { id?: number; name: string; body: string; mapsTo: string | null },
+): Promise<TemplateRow | null> {
+  const now = new Date().toISOString();
+  if (input.id === undefined) {
+    const { rows } = await db.query<TemplateRow>(
+      `INSERT INTO reply_templates (name, body, maps_to, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $4)
+       ON CONFLICT (name) DO UPDATE
+          SET body = excluded.body, maps_to = excluded.maps_to, updated_at = excluded.updated_at
+       RETURNING id, name, body, maps_to`,
+      [input.name, input.body, input.mapsTo, now],
+    );
+    return rows[0] ?? null;
+  }
+  const { rows } = await db.query<TemplateRow>(
+    `UPDATE reply_templates SET name = $1, body = $2, maps_to = $3, updated_at = $4
+      WHERE id = $5 RETURNING id, name, body, maps_to`,
+    [input.name, input.body, input.mapsTo, now, input.id],
+  );
+  return rows[0] ?? null;
+}
+
+export async function deleteTemplate(db: Db, id: number): Promise<boolean> {
+  const { rowCount } = await db.query(`DELETE FROM reply_templates WHERE id = $1`, [id]);
+  return (rowCount ?? 0) > 0;
+}
+
+/* ------------------------------------------------------ oversized attachments */
+
+/**
+ * Remember that the employee has been told their attachments did not fit (R12),
+ * and report whether this call is the one that should send the notice.
+ *
+ * A single flag per ticket rather than per message: the point is to explain the
+ * limit once, and a ticket where every reply carries a 20 MB file should not
+ * generate a lecture each time.
+ */
+export async function claimOversizedNotice(db: Db, ticketId: number): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE tickets SET oversized_notified_at = $1
+      WHERE id = $2 AND oversized_notified_at IS NULL`,
+    [new Date().toISOString(), ticketId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/**
+ * Put a bounced or permanently failed intent back in the queue (R28).
+ *
+ * `accepted_at` is cleared with it, which is the point: the auto-close clock is
+ * anchored to that column, so a resolution that bounced and is resent starts
+ * its 72 hours from the NEW acceptance rather than from the delivery that never
+ * arrived. The pending status rides along untouched, so a transition still
+ * waiting on this message is still waiting on it.
+ */
+export async function requeueIntent(db: Db, id: number): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `UPDATE outbox
+        SET state = 'pending', attempts = 0, next_attempt_at = $1, accepted_at = NULL,
+            sending_since = NULL, last_error = NULL, updated_at = $1
+      WHERE id = $2 AND state IN ('bounced', 'failed', 'ambiguous')`,
+    [new Date().toISOString(), id],
+  );
+  return (rowCount ?? 0) > 0;
 }

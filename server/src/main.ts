@@ -19,10 +19,10 @@ import { Storage } from "./storage.ts";
 import { Ticker, TICK_INTERVAL_MS } from "./ticker.ts";
 import { ingest, flushOutbox, sendReminders, autoClose, type AppContext } from "./pipeline.ts";
 import { handleApi } from "./api.ts";
-import { readCheckpoint, outboxSummary } from "./store.ts";
+import { readCheckpoint, outboxSummary, recordAudit } from "./store.ts";
 import { peekRecent, listFolders } from "./imap.ts";
 import { isAuthorised } from "./auth.ts";
-import { startBackups } from "./backup.ts";
+import { startBackups, backupNow, backupState, storageUsage } from "./backup.ts";
 
 const pool = createPool(config.databaseUrl);
 const storage = new Storage(config.storageDir);
@@ -48,6 +48,23 @@ async function tick(): Promise<{
 
 const ticker = new Ticker(tick, TICK_INTERVAL_MS);
 
+/**
+ * Record a failed backup where a person will see it (R23).
+ *
+ * Deliberately NOT an email. The alert channel for "the database could not be
+ * backed up" should not be the mail queue that lives in that database, and an
+ * outbox row needs a ticket to hang off - there is no ticket here. It goes to
+ * the audit trail, to /health and to /status instead, which is where a watchdog
+ * and an admin actually look.
+ */
+async function recordBackupFailure(error: string): Promise<void> {
+  await recordAudit(pool, {
+    actor: "system",
+    action: "backup_failed",
+    detail: error.slice(0, 500),
+  });
+}
+
 /** Mail runs only when there are credentials for it. */
 function mailConfigured(): boolean {
   return config.gmailUser !== "" && config.gmailAppPassword !== "";
@@ -65,9 +82,19 @@ app.get("/health", (c) => {
   // beating. A server started without mail credentials is not broken, and a
   // watchdog that cannot tell "switched off" from "died" is one that gets
   // ignored - which is how a real stall goes unnoticed.
-  const degraded = status.running && status.health.stalled;
+  const stalled = status.running && status.health.stalled;
+  // R23: a backup that has started failing is reported here rather than only
+  // logged. This endpoint is what monitoring polls; nobody reads yesterday's
+  // logs to find out whether last night's backup worked.
+  const backup = backupState();
+  const degraded = stalled || backup.failing;
   return c.json(
-    { ok: !degraded, mail: mailConfigured() ? "enabled" : "disabled", ticker: status },
+    {
+      ok: !degraded,
+      mail: mailConfigured() ? "enabled" : "disabled",
+      ticker: status,
+      backup,
+    },
     degraded ? 503 : 200,
   );
 });
@@ -87,7 +114,16 @@ app.all("/api/*", async (c) => handleApi(new URL(c.req.url), c.req.raw, env));
  * including the dashboard itself, and answered 404 to the browser before the
  * SPA fallback below was ever reached.
  */
-const OPS_PATHS = ["/status", "/ticker", "/ticker/*", "/peek", "/diag", "/poll", "/flush"];
+const OPS_PATHS = [
+  "/status",
+  "/ticker",
+  "/ticker/*",
+  "/peek",
+  "/diag",
+  "/poll",
+  "/flush",
+  "/backup",
+];
 const ops = new Hono();
 for (const path of OPS_PATHS) {
   ops.use(path, async (c, next) => {
@@ -119,6 +155,14 @@ ops.get("/status", async (c) =>
     outbox: await outboxSummary(pool),
     ticker: ticker.status(),
     mailSend: config.mailSend,
+    backup: backupState(),
+    // R23: storage monitoring. Attachments and archived raw messages grow
+    // without limit, and the first sign of a full disk should not be a backup
+    // that failed last night.
+    storage: {
+      attachments: await storageUsage(config.storageDir),
+      backups: await storageUsage(config.backupDir),
+    },
   }),
 );
 
@@ -137,6 +181,8 @@ ops.get("/peek", async (c) => c.json(await peekRecent(config.gmailUser, config.g
 ops.get("/diag", async (c) => c.json(await listFolders(config.gmailUser, config.gmailAppPassword)));
 ops.post("/poll", async (c) => c.json(await tick()));
 ops.post("/flush", async (c) => c.json(await flushOutbox(env)));
+/** Take a recovery point now, off-schedule: before an upgrade, or after a fix. */
+ops.post("/backup", async (c) => c.json(await backupNow(config, recordBackupFailure)));
 
 app.route("/", ops);
 
@@ -191,7 +237,7 @@ async function main(): Promise<void> {
     void ticker.tick();
   }
 
-  startBackups(config);
+  startBackups(config, recordBackupFailure);
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {

@@ -29,7 +29,15 @@ import {
   RESPONSE_HOURS,
 } from "../../prototype/src/domain/business-calendar.ts";
 import { chooseAssignee } from "./assignment.ts";
-import { isApprovedSender, extractAddress } from "./domain.ts";
+import { isApprovedSender, extractAddress, eligibleParticipants } from "./domain.ts";
+import { buildAcknowledgement } from "./acknowledgement.ts";
+import { buildReply } from "./reply.ts";
+import { threadCandidates } from "./threading.ts";
+import { isAutomaticMessage } from "./autoreply.ts";
+import { isBounce, bouncedMessageIds } from "./bounce.ts";
+import { parseOutgoingMessage } from "./mime.ts";
+import { sendMessage, SmtpError } from "./smtp.ts";
+import { buildNotification, type NotificationKind } from "./notification.ts";
 import {
   readCheckpoint,
   writeCheckpoint,
@@ -45,19 +53,17 @@ import {
   recordAcceptance,
   recordSendFailure,
   sweepStaleSending,
-} from "./store.ts";
-import { buildAcknowledgement } from "./acknowledgement.ts";
-import { buildReply } from "./reply.ts";
-import { threadCandidates } from "./threading.ts";
-import { isAutomaticMessage } from "./autoreply.ts";
-import { isBounce, bouncedMessageIds } from "./bounce.ts";
-import { parseOutgoingMessage } from "./mime.ts";
-import { sendMessage, SmtpError } from "./smtp.ts";
-import { buildNotification, type NotificationKind } from "./notification.ts";
-import {
   addAttachment,
   enqueueIntent,
   isNotificationThread,
+  addParticipants,
+  listParticipants,
+  isTicketParticipant,
+  claimOversizedNotice,
+  assignable,
+  recordAudit,
+  setOwner,
+  unassignedOpenTickets,
   ticketsNeedingReminder,
   ticketsReadyToClose,
   threadIds,
@@ -67,6 +73,7 @@ import {
   adminEmails,
   getTicket,
 } from "./store.ts";
+import { MAX_ATTACHMENT_BYTES } from "./storage.ts";
 import { classifySmtpFailure, nextAttemptAt, isAbandoned, SENDING_TIMEOUT_MS } from "./outbox.ts";
 
 /**
@@ -135,6 +142,56 @@ async function saveAttachments(
 }
 
 /**
+ * Tell the employee their attachments did not fit (R12).
+ *
+ * Queued as an intent with no `messages` row, exactly as the acknowledgement
+ * is. That is not an oversight: `first_response_at` is the earliest outbound
+ * message, so writing this to the history would have an automatic size notice
+ * satisfy the four-hour response deadline (R03) - IT would have "answered"
+ * without answering.
+ *
+ * Sent once per ticket. `claimOversizedNotice` is the lock: it returns true to
+ * exactly one caller, so two attachments refused in the same email produce one
+ * email back, not two.
+ */
+async function noticeOversized(
+  env: AppContext,
+  ticket: { id: number; subject: string; requester: string },
+  refused: readonly string[],
+): Promise<boolean> {
+  if (refused.length === 0) return false;
+  if (!(await claimOversizedNotice(env.pool, ticket.id))) return false;
+
+  const megabytes = String(Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024)));
+  const message = buildReply({
+    ticketNumber: ticket.id,
+    ticketSubject: ticket.subject,
+    requester: ticket.requester,
+    supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+    body: [
+      `We received your message and opened ticket #${String(ticket.id)}, but some`,
+      `of the attached files were too large. We accept ${megabytes} MB of`,
+      "attachments per email in total.",
+      "",
+      "These did not arrive:",
+      ...refused.map((name) => `  - ${name}`),
+      "",
+      "Please reply with them one or two at a time, or send a link instead.",
+      "Everything you wrote has been saved to the ticket.",
+    ].join("\n"),
+    threadMessageIds: await threadIds(env.pool, ticket.id),
+    date: new Date(),
+  });
+  return enqueueIntent(env.pool, {
+    ticketId: ticket.id,
+    intent: "reply",
+    recipient: ticket.requester,
+    messageId: message.messageId,
+    payload: JSON.stringify(message),
+  });
+}
+
+/**
  * Queue a one-way notification to a staff member (R15).
  *
  * Silently does nothing when there is nobody to tell - an unassigned ticket, or
@@ -170,6 +227,19 @@ async function notify(
     messageId: message.messageId,
     payload: JSON.stringify(message),
   });
+}
+
+/** Tell every admin something about a ticket nobody owns (R24). */
+export async function notifyAdmins(
+  env: AppContext,
+  ticket: { id: number; subject: string; requester: string },
+  kind: NotificationKind,
+): Promise<number> {
+  let sent = 0;
+  for (const address of await adminEmails(env.pool)) {
+    if (await notify(env, kind, ticket, address)) sent += 1;
+  }
+  return sent;
 }
 
 /** Tell a ticket's assignee something happened on it. */
@@ -290,10 +360,16 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
     // an out-of-office would lose it, when R15 needs it visible and R28 needs it
     // to pause auto-close.
     if (isBounce(message.rawHeaders)) {
-      const ticketId = await recordBounce(
-        env.pool,
-        bouncedMessageIds(`${message.rawHeaders}\n${message.body}`),
-      );
+      // The COMPLETE source, not headers-plus-body. The original message is in
+      // the report's message/rfc822 part, which readBody never returns - so for
+      // as long as this passed the extracted body, detection worked and
+      // matching almost never did. Falls back to what we have if the archive
+      // was not fetched.
+      const raw =
+        message.source === null
+          ? `${message.rawHeaders}\n${message.body}`
+          : message.source.toString("utf8");
+      const ticketId = await recordBounce(env.pool, bouncedMessageIds(raw));
       await recordSkip(
         env.pool,
         message.uid,
@@ -346,6 +422,29 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
     // that knowing a ticket number is not enough to join a conversation.
     const existingTicket = await findTicketByMessageIds(env.pool, candidates);
     if (existingTicket !== null) {
+      // R25: being on the approved domain authorises opening a ticket of your
+      // own. It does not authorise writing into a colleague's. Without this
+      // check, anybody in the company who learned a Message-ID could join any
+      // conversation - and IT would see their message attributed as the
+      // employee's own reply.
+      if (!(await isTicketParticipant(env.pool, existingTicket, requester))) {
+        await recordSkip(
+          env.pool,
+          message.uid,
+          "not_a_participant",
+          `Sender is not on ticket ${String(existingTicket)}; not appended`,
+        );
+        await recordAudit(env.pool, {
+          ticketId: existingTicket,
+          actor: "system",
+          action: "reply_refused",
+          detail: `${requester} is not a participant`,
+        });
+        rejected += 1;
+        continue;
+      }
+
+      const detail = await getTicket(env.pool, existingTicket);
       await appendReply(env.pool, {
         ticketId: existingTicket,
         uid: message.uid,
@@ -355,6 +454,42 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
         rawPath: await archive(env, message),
       });
       attachments += await saveAttachments(env, existingTicket, message);
+
+      // R25: the REQUESTER may add colleagues by copying them on a reply.
+      // Nobody else can - a participant who adds three more would grow the
+      // audience of somebody else's IT conversation without anyone deciding to.
+      if (detail !== null && requester === detail.ticket.requester.toLowerCase()) {
+        await addParticipants(
+          env.pool,
+          existingTicket,
+          eligibleParticipants(message.cc, [
+            detail.ticket.requester,
+            env.config.supportAddress,
+            env.config.gmailUser,
+          ]),
+          "requester",
+        );
+      } else if (detail !== null) {
+        const ignored = eligibleParticipants(message.cc, [
+          detail.ticket.requester,
+          env.config.supportAddress,
+          env.config.gmailUser,
+          ...(await listParticipants(env.pool, existingTicket)),
+        ]);
+        // Recorded rather than silently dropped: IT can add them deliberately
+        // if the sender was right to try.
+        if (ignored.length > 0) {
+          await recordAudit(env.pool, {
+            ticketId: existingTicket,
+            actor: "system",
+            action: "participant_addition_ignored",
+            detail: `${requester} copied ${ignored.join(", ")}`,
+          });
+        }
+      }
+      if (detail !== null) {
+        await noticeOversized(env, detail.ticket, message.oversized);
+      }
       // R15: the assignee is told about an employee reply. Queued, never sent
       // inline - the same reason the acknowledgement is queued.
       await notifyAssignee(env, existingTicket, "employee_reply");
@@ -379,12 +514,12 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
         // R07: fewest open tickets, round robin for ties. null when nobody is
         // available - the ticket stays visibly unassigned rather than being
         // handed to someone who cannot work it.
+        // R07/R24: fewest open tickets, round robin for ties, and only among
+        // people who are both available AND still have an account. null when
+        // nobody qualifies - the ticket stays visibly unassigned rather than
+        // being handed to someone who cannot work it, and admin is told below.
         owner: chooseAssignee(
-          (await staffWorkloads(env.pool)).map((member) => ({
-            name: member.name,
-            openTickets: member.openTickets,
-            available: member.available,
-          })),
+          assignable(await staffWorkloads(env.pool)),
           await lastAssignee(env.pool),
         ),
       },
@@ -410,8 +545,33 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
       },
     );
     attachments += await saveAttachments(env, ticketId, message);
+
+    // R25: colleagues copied on the original email join the ticket, provided
+    // they are on the approved domain. Our own addresses are excluded - copying
+    // the support mailbox on a reply to the support mailbox is how a loop
+    // starts.
+    await addParticipants(
+      env.pool,
+      ticketId,
+      eligibleParticipants(message.cc, [
+        requester,
+        env.config.supportAddress,
+        env.config.gmailUser,
+      ]),
+      "requester",
+    );
+
+    const opened = { id: ticketId, subject: message.subject, requester };
+    await noticeOversized(env, opened, message.oversized);
     // R15: notify on assignment. Only fires when chooseAssignee found somebody.
-    await notifyAssignee(env, ticketId, "assigned");
+    if (!(await notifyAssignee(env, ticketId, "assigned"))) {
+      // R24: nobody available. An unassigned ticket has no assignee to remind,
+      // so without this it would sit silently until its deadline passed.
+      const detail = await getTicket(env.pool, ticketId);
+      if (detail !== null && detail.ticket.owner === null) {
+        await notifyAdmins(env, opened, "unassigned");
+      }
+    }
     created += 1;
   }
 
@@ -433,6 +593,34 @@ export async function ingest(env: AppContext): Promise<RunSummary> {
     attachments,
     lastUid: highest,
   };
+}
+
+/**
+ * Give unassigned open tickets an owner (R24).
+ *
+ * Called when somebody becomes available again. It deliberately only touches
+ * tickets with NO owner: R24 says restoring availability must not rebalance
+ * work already assigned to people who are working it, and moving a ticket
+ * somebody has started is how two people answer the same employee.
+ *
+ * Nor does it return the tickets that were taken off them. Redistribution
+ * happened because they were unavailable; whoever picked those up has since
+ * been answering the employee, and taking them back mid-conversation is worse
+ * than leaving them where they are.
+ */
+export async function assignUnassigned(env: AppContext, actor = "system"): Promise<number> {
+  let assigned = 0;
+  for (const ticket of await unassignedOpenTickets(env.pool)) {
+    const owner = chooseAssignee(
+      assignable(await staffWorkloads(env.pool)),
+      await lastAssignee(env.pool),
+    );
+    if (owner === null) break;
+    await setOwner(env.pool, ticket, owner, actor);
+    await notifyAssignee(env, ticket, "assigned");
+    assigned += 1;
+  }
+  return assigned;
 }
 
 /**
@@ -507,6 +695,7 @@ export async function autoClose(env: AppContext, now: Date = new Date()): Promis
         "If it is not, reply to this email and the ticket reopens - you do not",
         "need to start a new request.",
       ].join("\n"),
+      participants: await listParticipants(env.pool, ticket.id),
       threadMessageIds: await threadIds(env.pool, ticket.id),
       date: now,
     });
@@ -592,7 +781,10 @@ export async function flushOutbox(env: AppContext, limit = 5): Promise<FlushSumm
         appPassword: env.config.gmailAppPassword,
         message,
         envelopeFrom: env.config.gmailUser,
-        envelopeTo: [due.recipient],
+        // R25: the Cc header alone delivers to nobody. SMTP routes by envelope,
+        // and a copied colleague who is in the header but not in RCPT TO sees
+        // their own name on a message they never received.
+        envelopeTo: [due.recipient, ...(message.cc ?? [])],
       });
       // R28: the acceptance and any status transition waiting on it commit
       // together.

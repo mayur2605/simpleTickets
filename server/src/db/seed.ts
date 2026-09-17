@@ -18,13 +18,78 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { createPool } from "./pool.ts";
 import { config } from "../config.ts";
-import { addStaff, setPasswordHash, staffWorkloads } from "../store.ts";
+import { addStaff, setPasswordHash, staffWorkloads, upsertTemplate } from "../store.ts";
 import { hashPassword } from "../password.ts";
 
 /** R07: five IT staff. staff1 is the admin, as chosen. */
 export const STAFF = ["staff1", "staff2", "staff3", "staff4", "staff5"] as const;
 export const ADMIN = "staff1";
 const MIN_PASSWORD_LENGTH = 12;
+
+/**
+ * The four starter templates R24 names, with the status each one requests.
+ *
+ * Wording matters more here than anywhere else in the codebase: these go to
+ * real employees under five different people's names, so they say what happens
+ * next and when, and none of them tells the employee to close anything by
+ * replying — R24 and the constitution both forbid that, and an employee who
+ * follows such an instruction gets a reopened ticket instead.
+ *
+ * "Troubleshooting steps" is deliberately incomplete. The steps are
+ * issue-specific and belong to whoever is sending it; shipping plausible
+ * generic ones would get them sent unedited.
+ */
+export const STARTER_TEMPLATES = [
+  {
+    name: "Working on it",
+    mapsTo: "In Progress",
+    body: [
+      "Thanks for getting in touch. We have picked this up and are looking at it now.",
+      "",
+      "We will come back to you as soon as we know more. If anything changes at your",
+      "end in the meantime, reply to this email and it will be added to the ticket.",
+    ].join("\n"),
+  },
+  {
+    name: "Request more details",
+    mapsTo: "Waiting for Employee",
+    body: [
+      "Thanks for getting in touch. Before we can go further we need a little more",
+      "detail:",
+      "",
+      "  - What exactly did you see, and what did you expect to see instead?",
+      "  - When did it start, and does it happen every time?",
+      "  - Which device and which application?",
+      "",
+      "A screenshot helps if you can attach one. Reply to this email and it will be",
+      "added to the ticket.",
+    ].join("\n"),
+  },
+  {
+    name: "Troubleshooting steps",
+    mapsTo: "Waiting for Employee",
+    body: [
+      "Thanks for waiting. Please try the following and let us know what happens:",
+      "",
+      "  1. [replace with the first step before sending]",
+      "  2. [replace with the second step before sending]",
+      "",
+      "Reply to this email with what you saw at each step, including any error",
+      "message, and it will be added to the ticket.",
+    ].join("\n"),
+  },
+  {
+    name: "Issue resolved",
+    mapsTo: "Resolved",
+    body: [
+      "This should now be sorted. Please have a look and confirm it is working for",
+      "you.",
+      "",
+      "If it is not, reply to this email and the ticket reopens - you do not need to",
+      "start a new request.",
+    ].join("\n"),
+  },
+] as const;
 
 async function promptSecret(question: string): Promise<string> {
   const input = process.stdin;
@@ -52,6 +117,15 @@ export async function seedStaff(connectionString: string): Promise<string[]> {
   try {
     for (const name of STAFF) {
       await addStaff(pool, name, `${name}@allcheckservices.com`, name === ADMIN);
+    }
+    // Name-keyed upsert, so re-seeding refreshes the starter wording without
+    // duplicating it - and without touching anything the admin has added.
+    for (const template of STARTER_TEMPLATES) {
+      await upsertTemplate(pool, {
+        name: template.name,
+        body: template.body,
+        mapsTo: template.mapsTo,
+      });
     }
     return (await staffWorkloads(pool)).map((member) => member.name);
   } finally {

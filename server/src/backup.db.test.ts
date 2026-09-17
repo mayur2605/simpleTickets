@@ -13,9 +13,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { testPool, truncate, TEST_DATABASE_URL } from "./db/testing.ts";
-import { runBackup, restoreBackup } from "./backup.ts";
+import { runBackup, restoreBackup, runFileBackup, restoreFiles } from "./backup.ts";
 import { config } from "./config.ts";
-import { createTicket, listTickets, addStaff, getTicket } from "./store.ts";
+import {
+  createTicket,
+  listTickets,
+  addStaff,
+  getTicket,
+  addAttachment,
+  getAttachment,
+} from "./store.ts";
+import { Storage } from "./storage.ts";
 
 let pool: Pool;
 let dir: string;
@@ -90,5 +98,64 @@ describe("backup and restore", () => {
     );
     expect(next).toBeGreaterThan(0);
     expect(await listTickets(pool)).toHaveLength(2);
+  });
+});
+
+/**
+ * R24 asks for a restore that proves "message/attachment consistency". A
+ * pg_dump alone cannot: attachments live on disk, so restoring the database on
+ * its own produces an `attachments` table whose every row points at a file that
+ * is not there — a backup that looks complete and is not.
+ */
+describe("restoring attachments with the database", () => {
+  it("brings the bytes back, and the rows still point at them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "simpletickets-files-"));
+    const storageDir = join(root, "storage");
+    const backupDir = join(root, "backups");
+    const storage = new Storage(storageDir);
+    const settings = { ...config, databaseUrl: TEST_DATABASE_URL, storageDir, backupDir };
+
+    const ticketId = await createTicket(pool, {
+      uid: 1,
+      subject: "Printer jams",
+      requester: "ananya.rao@allcheckservices.com",
+      body: "See the photo.",
+      messageId: "<in.1@mail.test>",
+      responseDue: new Date().toISOString(),
+      owner: null,
+    });
+    const path = await storage.storeAttachment(ticketId, Buffer.from("PNG-BYTES"));
+    await addAttachment(pool, {
+      ticketId,
+      messageId: null,
+      filename: "jam.png",
+      contentType: "image/png",
+      bytes: 9,
+      path,
+    });
+
+    const started = Date.now();
+    const dump = await runBackup(settings);
+    const archive = await runFileBackup(settings);
+    expect(archive).not.toBeNull();
+
+    // Lose both halves, exactly as a disk failure would.
+    await truncate(pool);
+    await rm(storageDir, { recursive: true, force: true });
+    expect(await storage.exists(path)).toBe(false);
+
+    await restoreBackup(dump, TEST_DATABASE_URL, config.pgBin);
+    await restoreFiles(archive ?? "", storageDir);
+    const restoreMs = Date.now() - started;
+
+    // The row is back, and so is the file it names - which is the whole point.
+    const row = await getAttachment(pool, 1);
+    expect(row?.filename).toBe("jam.png");
+    expect((await storage.read(row?.path ?? "")).toString()).toBe("PNG-BYTES");
+    // Recorded rather than asserted against a threshold: a number that varies
+    // with the machine would make this test fail for reasons that are not bugs.
+    console.log(JSON.stringify({ event: "restore_measured", restoreMs }));
+
+    await rm(root, { recursive: true, force: true });
   });
 });

@@ -16,13 +16,34 @@ import {
   staffWorkloads,
   addStaff,
   setAvailability,
+  setEnabled,
   setStatus,
   setOwner,
   openTicketsOwnedBy,
   lastAssignee,
   stuckIntents,
+  requeueIntent,
   getAttachment,
+  assignable,
+  recordAudit,
+  recentAudit,
+  listParticipants,
+  participantHistory,
+  addParticipants,
+  removeParticipant,
+  listTemplates,
+  getTemplate,
+  upsertTemplate,
+  deleteTemplate,
+  findStaff,
+  setPasswordHash,
+  createSession,
+  findSession,
+  deleteSession,
+  recordLoginFailure,
+  recentFailures,
 } from "./store.ts";
+import { eligibleParticipants } from "./domain.ts";
 import { chooseAssignee } from "./assignment.ts";
 import { safeFilename } from "./storage.ts";
 import { buildReply } from "./reply.ts";
@@ -38,25 +59,25 @@ import {
   expiryFrom,
   isExpired,
 } from "./session.ts";
-import {
-  findStaff,
-  setPasswordHash,
-  createSession,
-  findSession,
-  deleteSession,
-  recordLoginFailure,
-  recentFailures,
-} from "./store.ts";
-import { notifyAssignee, type AppContext } from "./pipeline.ts";
+import { notifyAssignee, assignUnassigned, type AppContext } from "./pipeline.ts";
 
+/**
+ * Assignment candidates. `assignable` is what ANDs availability with account
+ * access, in one place, so no route can forget the second half and hand work to
+ * a disabled account.
+ */
 async function workloads(
   env: AppContext,
 ): Promise<{ name: string; openTickets: number; available: boolean }[]> {
-  return (await staffWorkloads(env.pool)).map((member) => ({
-    name: member.name,
-    openTickets: member.openTickets,
-    available: member.available,
-  }));
+  return assignable(await staffWorkloads(env.pool));
+}
+
+/** Read and validate a JSON request body without casting it. */
+async function readJson(request: Request): Promise<Record<string, unknown>> {
+  const raw: unknown = await request.json().catch(() => null);
+  return typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
 }
 
 /**
@@ -70,16 +91,25 @@ async function workloads(
 async function redistribute(
   env: AppContext,
   name: string,
+  actor: string,
 ): Promise<{ ticket: number; owner: string | null }[]> {
   const moved: { ticket: number; owner: string | null }[] = [];
   for (const ticket of await openTicketsOwnedBy(env.pool, name)) {
     const candidates = (await workloads(env)).filter((member) => member.name !== name);
     const owner = chooseAssignee(candidates, await lastAssignee(env.pool));
-    await setOwner(env.pool, ticket, owner);
+    await setOwner(env.pool, ticket, owner, actor);
     moved.push({ ticket, owner });
   }
   return moved;
 }
+
+/**
+ * Statuses a reply template may request (R24).
+ *
+ * Closure is absent on purpose: R24 says closure is not a template action, and
+ * New is absent because a ticket never goes back to it.
+ */
+const TEMPLATE_STATUSES = ["In Progress", "Waiting for Employee", "Resolved"];
 
 /** Failed sign-ins tolerated per account before it is locked out briefly. */
 const MAX_FAILURES = 5;
@@ -109,6 +139,10 @@ async function identify(request: Request, env: AppContext): Promise<Identity | n
     await deleteSession(env.pool, await hashToken(token));
     return null;
   }
+  // Disabling deletes the session rows, so reaching here with a disabled
+  // account means a request that was already in flight when the DELETE ran.
+  // Rare, and the cost of covering it is one column on a join we already do.
+  if (!session.enabled) return null;
   return { name: session.staff_name, isAdmin: session.is_admin };
 }
 
@@ -116,11 +150,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
   const identity = await identify(request, env);
 
   if (url.pathname === "/api/login" && request.method === "POST") {
-    const raw: unknown = await request.json().catch(() => null);
-    const body: Record<string, unknown> =
-      typeof raw === "object" && raw !== null && !Array.isArray(raw)
-        ? (raw as Record<string, unknown>)
-        : {};
+    const body = await readJson(request);
     const name = body["name"];
     const password = body["password"];
     if (typeof name !== "string" || typeof password !== "string") {
@@ -152,7 +182,11 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
     // matters more. Revisit if names ever become non-obvious.
     const rejected = Response.json({ error: "Incorrect name or password" }, { status: 401 });
 
-    if (account === null || account.password_hash === null) {
+    // A disabled account is refused with the same message as a wrong password.
+    // Saying "this account is disabled" would confirm the name exists and that
+    // it used to work, which is exactly what someone probing a leaver's
+    // credentials wants to know.
+    if (account === null || account.password_hash === null || !account.enabled) {
       await recordLoginFailure(env.pool, name);
       return rejected;
     }
@@ -191,11 +225,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
     if (identity === null || !identity.isAdmin) {
       return Response.json({ error: "Admin sign-in required" }, { status: 403 });
     }
-    const raw: unknown = await request.json().catch(() => null);
-    const body: Record<string, unknown> =
-      typeof raw === "object" && raw !== null && !Array.isArray(raw)
-        ? (raw as Record<string, unknown>)
-        : {};
+    const body = await readJson(request);
     const name = body["name"];
     const password = body["password"];
     if (typeof name !== "string" || typeof password !== "string" || password.length < 12) {
@@ -226,11 +256,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       return Response.json({ staff: await staffWorkloads(env.pool) });
     }
     if (request.method === "POST") {
-      const raw: unknown = await request.json().catch(() => null);
-      const payload: Record<string, unknown> =
-        typeof raw === "object" && raw !== null && !Array.isArray(raw)
-          ? (raw as Record<string, unknown>)
-          : {};
+      const payload = await readJson(request);
       const name = payload["name"];
       if (typeof name !== "string" || name.trim().length === 0) {
         return Response.json({ error: "A name is required" }, { status: 400 });
@@ -245,7 +271,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           return Response.json({ error: "Admin sign-in required" }, { status: 403 });
         }
         const available = payload["available"] === true;
-        const changed = await setAvailability(env.pool, name, available);
+        const changed = await setAvailability(env.pool, name, available, identity.name);
         if (!changed) {
           return Response.json({ error: "No such staff member" }, { status: 404 });
         }
@@ -253,11 +279,48 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
         // somebody unavailable and leaving their queue where it is produces
         // tickets that look owned and that nobody is looking at - the exact
         // failure the requirement exists to prevent.
-        const redistributed = available ? [] : await redistribute(env, name);
+        const redistributed = available ? [] : await redistribute(env, name, identity.name);
         for (const move of redistributed) {
           if (move.owner !== null) await notifyAssignee(env, move.ticket, "assigned");
         }
-        return Response.json({ updated: name, available, redistributed });
+        // Coming back available picks up what nobody owns - and ONLY that. R24
+        // is explicit that restoring availability must not rebalance tickets
+        // already being worked by somebody else.
+        const picked = available ? await assignUnassigned(env, identity.name) : 0;
+        return Response.json({ updated: name, available, redistributed, assigned: picked });
+      }
+
+      // Account access (R24). Disabling revokes sign-in, kills live sessions
+      // and redistributes work, all of which availability deliberately does
+      // not do - somebody on leave keeps their login, a leaver does not.
+      if ("enabled" in payload) {
+        if (!identity.isAdmin) {
+          return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+        }
+        if (name === identity.name && payload["enabled"] !== true) {
+          // An admin disabling their own account locks the last door from the
+          // inside: only an admin may re-enable one, and only from a session
+          // this would have just deleted.
+          return Response.json({ error: "You cannot disable your own account" }, { status: 409 });
+        }
+        const enabled = payload["enabled"] === true;
+        const result = await setEnabled(env.pool, name, enabled, identity.name);
+        if (result === null) {
+          return Response.json({ error: "No such staff member" }, { status: 404 });
+        }
+        const redistributed = enabled ? [] : await redistribute(env, name, identity.name);
+        for (const move of redistributed) {
+          if (move.owner !== null) await notifyAssignee(env, move.ticket, "assigned");
+        }
+        // Re-enabling returns nothing: the tickets moved on when the account
+        // was disabled, and whoever picked them up has been answering the
+        // employee since.
+        return Response.json({
+          updated: name,
+          enabled,
+          sessionsRevoked: result.sessionsRevoked,
+          redistributed,
+        });
       }
 
       await addStaff(env.pool, name, email);
@@ -292,9 +355,8 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
     });
   }
 
-  const ticketMatch = /^\/api\/tickets\/(\d+)(\/reply|\/note|\/status|\/assign)?$/.exec(
-    url.pathname,
-  );
+  const ticketMatch =
+    /^\/api\/tickets\/(\d+)(\/reply|\/note|\/status|\/assign|\/participants)?$/.exec(url.pathname);
   if (ticketMatch !== null) {
     const id = Number(ticketMatch[1]);
     const detail = await getTicket(env.pool, id);
@@ -319,11 +381,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
 
     if (request.method === "POST") {
       // Request bodies are an external boundary: validate, never cast.
-      const raw: unknown = await request.json().catch(() => null);
-      const payload: Record<string, unknown> =
-        typeof raw === "object" && raw !== null && !Array.isArray(raw)
-          ? (raw as Record<string, unknown>)
-          : {};
+      const payload = await readJson(request);
       const body = payload["body"];
       if (ticketMatch[2] !== "/assign" && (typeof body !== "string" || body.trim().length === 0)) {
         return Response.json({ error: "A body is required" }, { status: 400 });
@@ -332,6 +390,43 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       // NOT payload["author"]. Whoever is signed in is the author; a client
       // that says otherwise is ignored.
       const author = identity.name;
+
+      // R25: IT manages who is copied on a ticket. Additions and removals are
+      // both explicit acts and both audited - an address dropping out of a Cc
+      // header never removes anybody, which is what the requirement says in as
+      // many words.
+      if (ticketMatch[2] === "/participants") {
+        const remove = payload["remove"];
+        if (typeof remove === "string") {
+          const removed = await removeParticipant(env.pool, id, remove, identity.name);
+          return removed
+            ? Response.json({ removed: remove.toLowerCase() })
+            : Response.json({ error: "Not a participant on this ticket" }, { status: 404 });
+        }
+        const requested = payload["add"];
+        const list = Array.isArray(requested)
+          ? requested.filter((entry): entry is string => typeof entry === "string")
+          : typeof requested === "string"
+            ? [requested]
+            : [];
+        // Same domain rule as an emailed CC, and for the same reason: an
+        // external address added from the dashboard would receive an
+        // employee's IT correspondence exactly as one added by email would.
+        const eligible = eligibleParticipants(list.join(", "), [
+          detail.ticket.requester,
+          env.config.supportAddress,
+          env.config.gmailUser,
+        ]);
+        const refused = list.filter(
+          (entry) => !eligible.some((address) => entry.toLowerCase().includes(address)),
+        );
+        const added = await addParticipants(env.pool, id, eligible, identity.name);
+        return Response.json({
+          added,
+          refused,
+          participants: await participantHistory(env.pool, id),
+        });
+      }
 
       if (ticketMatch[2] === "/assign") {
         // Only an admin may hand work to someone else; anyone signed in may
@@ -348,12 +443,14 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
         if (owner !== identity.name && !identity.isAdmin) {
           return Response.json({ error: "Admin sign-in required" }, { status: 403 });
         }
-        await setOwner(env.pool, id, owner);
         // R08/R15: "record each assignment change and notify new owners."
-        if (owner !== null && owner !== detail.ticket.owner) {
+        // setOwner writes the audit entry; it returns false when the ticket
+        // already had that owner, which is not a change to announce.
+        const moved = await setOwner(env.pool, id, owner, identity.name);
+        if (moved && owner !== null) {
           await notifyAssignee(env, id, "assigned");
         }
-        return Response.json({ ticket: id, owner });
+        return Response.json({ ticket: id, owner, changed: moved });
       }
 
       // An internal note never touches the outbox. See store.addNote.
@@ -361,6 +458,12 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
         await addNote(env.pool, id, author, text);
         return Response.json({ added: "note" });
       }
+
+      // Everyone this ticket's public mail goes to (R25). Read once here so
+      // /reply and /status compose identically - a reply that copied the
+      // colleagues and a resolution that did not would tell half the audience
+      // the problem was fixed.
+      const participants = await listParticipants(env.pool, id);
 
       if (ticketMatch[2] === "/status") {
         const target = payload["status"];
@@ -377,7 +480,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
         }
 
         if (rule.kind === "immediate") {
-          await setStatus(env.pool, id, target);
+          await setStatus(env.pool, id, target, identity.name);
           return Response.json({ status: target, applied: "immediately" });
         }
 
@@ -388,6 +491,7 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           ticketNumber: id,
           ticketSubject: detail.ticket.subject,
           requester: detail.ticket.requester,
+          participants,
           supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
           body: text,
           threadMessageIds: await threadIds(env.pool, id),
@@ -402,6 +506,12 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           payload: JSON.stringify(message),
           intent: rule.intent,
           pendingStatus: target,
+        });
+        await recordAudit(env.pool, {
+          ticketId: id,
+          actor: author,
+          action: "status_requested",
+          detail: `${target} (waiting on ${rule.intent} delivery)`,
         });
         return Response.json({
           queued: true,
@@ -412,10 +522,33 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       }
 
       if (ticketMatch[2] === "/reply") {
+        // R24: a template may carry a status. The BODY still comes from the
+        // request, never from the template row - staff may edit a selected
+        // reply before sending, and that edit must reach the employee while
+        // leaving the shared template alone. Only the mapping is read here.
+        const requestedTemplate = payload["templateId"];
+        const template =
+          typeof requestedTemplate === "number"
+            ? await getTemplate(env.pool, requestedTemplate)
+            : null;
+        if (typeof requestedTemplate === "number" && template === null) {
+          return Response.json({ error: "No such template" }, { status: 404 });
+        }
+
+        const mapped = template?.maps_to ?? null;
+        const rule =
+          mapped === null ? null : transitionRule(detail.ticket.status as Status, mapped as Status);
+        // A template whose mapping does not apply to this ticket - "Issue
+        // resolved" on an already-Resolved one - sends the reply and leaves the
+        // status alone. Refusing the whole send would lose what IT wrote over a
+        // status they may not have been thinking about.
+        const gated = rule?.kind === "delivery-gated" ? rule : null;
+
         const message = buildReply({
           ticketNumber: id,
           ticketSubject: detail.ticket.subject,
           requester: detail.ticket.requester,
+          participants,
           supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
           body: text,
           threadMessageIds: await threadIds(env.pool, id),
@@ -428,10 +561,38 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
           messageId: message.messageId,
           recipient: detail.ticket.requester,
           payload: JSON.stringify(message),
+          ...(gated === null || mapped === null
+            ? {}
+            : { intent: gated.intent, pendingStatus: mapped }),
         });
+
+        // An immediate mapping (In Progress) applies now; a gated one rides on
+        // the outbox row and applies when the server accepts it (R28).
+        if (rule?.kind === "immediate" && mapped !== null) {
+          await setStatus(env.pool, id, mapped, author);
+        } else if (gated !== null && mapped !== null) {
+          await recordAudit(env.pool, {
+            ticketId: id,
+            actor: author,
+            action: "status_requested",
+            detail: `${mapped} (waiting on ${gated.intent} delivery)`,
+          });
+        }
+
         // Queued, not sent. The ticker delivers it on its next tick, so a
         // slow or refusing SMTP server cannot block the dashboard.
-        return Response.json({ queued: true, messageId: message.messageId });
+        return Response.json({
+          queued: true,
+          messageId: message.messageId,
+          copiedTo: participants,
+          ...(mapped === null
+            ? {}
+            : rule?.kind === "immediate"
+              ? { status: mapped, applied: "immediately" }
+              : gated === null
+                ? { statusUnchanged: rule?.kind === "invalid" ? rule.reason : null }
+                : { pendingStatus: mapped }),
+        });
       }
     }
 
@@ -444,6 +605,114 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
   // one from the ticket list.
   if (url.pathname === "/api/outbox" && request.method === "GET") {
     return Response.json({ stuck: await stuckIntents(env.pool) });
+  }
+
+  /**
+   * Put a bounced, failed or ambiguous message back in the queue (R28).
+   *
+   * This is what re-anchors an auto-close clock: `requeueIntent` clears
+   * accepted_at, so a resolution that bounced and is resent counts its 72 hours
+   * from the new acceptance rather than from the delivery that never arrived.
+   *
+   * Ambiguous rows are included deliberately, and this is the human decision
+   * PRD open point 4 parks: only a person can say whether a send whose outcome
+   * was never learned should be tried again.
+   */
+  const resendMatch = /^\/api\/outbox\/(\d+)\/resend$/.exec(url.pathname);
+  if (resendMatch !== null && request.method === "POST") {
+    const outboxId = Number(resendMatch[1]);
+    const requeued = await requeueIntent(env.pool, outboxId);
+    if (!requeued) {
+      return Response.json(
+        { error: "Nothing to resend: no such message, or it is not failed, bounced or ambiguous" },
+        { status: 409 },
+      );
+    }
+    await recordAudit(env.pool, {
+      actor: identity.name,
+      action: "resend_queued",
+      detail: `outbox ${String(outboxId)}`,
+    });
+    return Response.json({ requeued: outboxId });
+  }
+
+  /** The audit trail (R08). Everything, newest first; per-ticket lives on the detail. */
+  if (url.pathname === "/api/audit" && request.method === "GET") {
+    return Response.json({ audit: await recentAudit(env.pool) });
+  }
+
+  /**
+   * Reply templates (R24).
+   *
+   * Reading is open to all five staff; writing is admin-only, because these are
+   * shared wording that goes out under everyone's name. Editing one never
+   * touches what has already been sent: the outgoing text is copied into
+   * `messages` and into the outbox payload at send time.
+   */
+  const templateMatch = /^\/api\/templates(?:\/(\d+))?$/.exec(url.pathname);
+  if (templateMatch !== null) {
+    if (request.method === "GET") {
+      return Response.json({ templates: await listTemplates(env.pool) });
+    }
+    if (!identity.isAdmin) {
+      return Response.json({ error: "Admin sign-in required" }, { status: 403 });
+    }
+    const existing = templateMatch[1] === undefined ? undefined : Number(templateMatch[1]);
+
+    if (request.method === "DELETE" && existing !== undefined) {
+      const removed = await deleteTemplate(env.pool, existing);
+      if (removed) {
+        await recordAudit(env.pool, {
+          actor: identity.name,
+          action: "template_deleted",
+          detail: String(existing),
+        });
+      }
+      return removed
+        ? Response.json({ deleted: existing })
+        : Response.json({ error: "No such template" }, { status: 404 });
+    }
+
+    if (request.method === "POST" || request.method === "PUT") {
+      const payload = await readJson(request);
+      const name = payload["name"];
+      const body = payload["body"];
+      if (
+        typeof name !== "string" ||
+        name.trim().length === 0 ||
+        typeof body !== "string" ||
+        body.trim().length === 0
+      ) {
+        return Response.json({ error: "A name and a body are required" }, { status: 400 });
+      }
+      // R24: closure is deliberately not a template action, and no other status
+      // may be mapped. The database CHECK says the same thing; this says it
+      // before the row is attempted, with a message that explains itself.
+      const requested = payload["mapsTo"];
+      const mapsTo = typeof requested === "string" && requested !== "" ? requested : null;
+      if (mapsTo !== null && !TEMPLATE_STATUSES.includes(mapsTo)) {
+        return Response.json(
+          { error: `mapsTo must be null or one of: ${TEMPLATE_STATUSES.join(", ")}` },
+          { status: 400 },
+        );
+      }
+      const saved = await upsertTemplate(env.pool, {
+        ...(existing === undefined ? {} : { id: existing }),
+        name: name.trim(),
+        body,
+        mapsTo,
+      });
+      if (saved === null) {
+        return Response.json({ error: "No such template" }, { status: 404 });
+      }
+      await recordAudit(env.pool, {
+        actor: identity.name,
+        action: existing === undefined ? "template_created" : "template_updated",
+        detail: saved.name,
+      });
+      return Response.json({ template: saved });
+    }
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
   }
 
   // Attachments (R12). Served through the API rather than from a static

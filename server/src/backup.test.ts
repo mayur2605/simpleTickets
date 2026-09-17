@@ -2,8 +2,14 @@ import { describe, it, expect, afterAll } from "vitest";
 import { mkdtemp, rm, writeFile, utimes, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { msUntilNextBackup, backupName, pruneBackups, RETENTION_DAYS } from "./backup.ts";
-import { config } from "./config.ts";
+import {
+  msUntilNextBackup,
+  backupName,
+  filesName,
+  pruneBackups,
+  RETENTION_DAYS,
+} from "./backup.ts";
+import { config, type Config } from "./config.ts";
 
 const dir = await mkdtemp(join(tmpdir(), "simpletickets-backup-"));
 afterAll(async () => {
@@ -74,5 +80,66 @@ describe("retention", () => {
 
   it("does nothing when the backup directory does not exist yet", async () => {
     expect(await pruneBackups({ ...config, backupDir: join(dir, "missing") })).toEqual([]);
+  });
+});
+
+/**
+ * R23: "safe pruning that preserves dependencies and the last usable backup."
+ *
+ * Both halves of that sentence are a specific way a retention sweep destroys
+ * the thing it is looking after, and neither is theoretical: one loses every
+ * backup on a machine that was switched off, the other leaves a database dump
+ * whose attachment rows all point at files that no longer exist.
+ */
+describe("pruneBackups dependencies", () => {
+  const old = new Date(Date.now() - (RETENTION_DAYS + 5) * 24 * 60 * 60_000);
+
+  async function seed(root: string, files: { name: string; age: Date }[]): Promise<Config> {
+    for (const file of files) {
+      const path = join(root, file.name);
+      await writeFile(path, "x");
+      await utimes(path, file.age, file.age);
+    }
+    return { ...config, backupDir: root, storageDir: join(root, "storage") };
+  }
+
+  it("keeps the newest dump even when it is past retention", async () => {
+    const root = await mkdtemp(join(tmpdir(), "simpletickets-prune-last-"));
+    const only = await seed(root, [{ name: "simpletickets-2026-01-01.dump", age: old }]);
+    expect(await pruneBackups(only)).toEqual([]);
+    expect(await readdir(root)).toContain("simpletickets-2026-01-01.dump");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /**
+   * A database dump and its file archive are one recovery point. Pruning the
+   * attachments out from under a dump that is being kept produces a backup
+   * that restores cleanly and is missing every file.
+   */
+  it("never orphans a kept dump from its attachments", async () => {
+    const root = await mkdtemp(join(tmpdir(), "simpletickets-prune-pair-"));
+    const now = new Date();
+    const paired = await seed(root, [
+      { name: "simpletickets-2026-01-01.dump", age: old },
+      { name: "simpletickets-2026-01-01-files.tgz", age: old },
+      { name: "simpletickets-2026-09-17.dump", age: now },
+      { name: "simpletickets-2026-09-17-files.tgz", age: now },
+    ]);
+    const removed = await pruneBackups(paired);
+    // The old pair goes together; the current pair stays together.
+    expect(removed.sort()).toEqual([
+      "simpletickets-2026-01-01-files.tgz",
+      "simpletickets-2026-01-01.dump",
+    ]);
+    const left = await readdir(root);
+    expect(left).toContain("simpletickets-2026-09-17.dump");
+    expect(left).toContain("simpletickets-2026-09-17-files.tgz");
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("names both halves of a recovery point for the same IST day", () => {
+    const at = new Date("2026-09-17T20:30:00.000Z");
+    expect(backupName(at)).toBe("simpletickets-2026-09-18.dump");
+    expect(filesName(at)).toBe("simpletickets-2026-09-18-files.tgz");
   });
 });

@@ -196,3 +196,46 @@ describe("parseOutgoingMessage", () => {
     expect(parseOutgoingMessage(stored).inReplyTo).toBeUndefined();
   });
 });
+
+describe("Cc header", () => {
+  const base = {
+    from: "SimpleTickets <support@allcheckservices.com>",
+    to: ["ananya.rao@allcheckservices.com"],
+    subject: "[#42] Printer jams",
+    body: "We have ordered a new roller.",
+    messageId: "<reply.42.1@simpletickets>",
+    date: new Date("2026-09-17T10:00:00.000Z"),
+  };
+
+  it("writes the copied addresses", () => {
+    const raw = buildMessage({
+      ...base,
+      cc: ["sam@allcheckservices.com", "j@allcheckservices.com"],
+    });
+    expect(raw).toContain("Cc: sam@allcheckservices.com, j@allcheckservices.com\r\n");
+  });
+
+  it("writes no Cc header when there is nobody to copy", () => {
+    expect(buildMessage({ ...base, cc: [] })).not.toContain("Cc:");
+    expect(buildMessage(base)).not.toContain("Cc:");
+  });
+
+  /**
+   * Cc addresses reach us from an employee's Cc header, so they are
+   * attacker-controlled exactly as To and Subject are. A bare newline in one
+   * would terminate the header and let the sender append their own, Bcc
+   * included.
+   */
+  it("refuses a line break in a copied address", () => {
+    expect(() => buildMessage({ ...base, cc: ["ok@x.test\r\nBcc: attacker@evil.test"] })).toThrow(
+      HeaderInjectionError,
+    );
+  });
+
+  it("survives a round trip through the outbox", () => {
+    const message = { ...base, cc: ["sam@allcheckservices.com"] };
+    const revived = parseOutgoingMessage(JSON.stringify(message));
+    expect(revived.cc).toEqual(["sam@allcheckservices.com"]);
+    expect(parseOutgoingMessage(JSON.stringify(base)).cc).toBeUndefined();
+  });
+});

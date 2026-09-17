@@ -63,3 +63,45 @@ describe("buildReply", () => {
     expect(() => buildReply({ ...base, body: "" })).toThrow();
   });
 });
+
+/**
+ * R25: eligible CC participants are copied on public replies.
+ *
+ * Header and envelope are separate problems and both matter. A colleague in the
+ * Cc header but missing from RCPT TO sees their own name on a message they
+ * never received, which is worse than not being copied at all.
+ */
+describe("buildReply with CC participants", () => {
+  const base = {
+    ticketNumber: 42,
+    ticketSubject: "Printer jams",
+    requester: "ananya.rao@allcheckservices.com",
+    supportAddress: "SimpleTickets <support@allcheckservices.com>",
+    body: "We have ordered a new roller.",
+    threadMessageIds: [],
+    date: new Date("2026-09-17T10:00:00.000Z"),
+  };
+
+  it("copies the participants", () => {
+    const message = buildReply({ ...base, participants: ["sam@allcheckservices.com"] });
+    expect(message.to).toEqual(["ananya.rao@allcheckservices.com"]);
+    expect(message.cc).toEqual(["sam@allcheckservices.com"]);
+  });
+
+  /**
+   * The requester is the addressee, never also a copy. Some clients show the
+   * address twice and some servers deliver two copies of the message.
+   */
+  it("never copies the requester on their own ticket", () => {
+    const message = buildReply({
+      ...base,
+      participants: ["Ananya.Rao@allcheckservices.com", "sam@allcheckservices.com"],
+    });
+    expect(message.cc).toEqual(["sam@allcheckservices.com"]);
+  });
+
+  it("omits the header entirely when nobody is copied", () => {
+    expect(buildReply({ ...base, participants: [] }).cc).toBeUndefined();
+    expect(buildReply(base).cc).toBeUndefined();
+  });
+});

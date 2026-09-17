@@ -33,7 +33,8 @@ export async function testPool(): Promise<Pool> {
 export async function truncate(pool: Pool): Promise<void> {
   await pool.query(
     `TRUNCATE tickets, messages, ingest_log, outbox, staff, sessions,
-              login_failures, mailbox_state, attachments
+              login_failures, mailbox_state, attachments,
+              audit_events, ticket_participants, reply_templates
      RESTART IDENTITY CASCADE`,
   );
 }

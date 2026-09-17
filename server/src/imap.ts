@@ -23,6 +23,8 @@ export interface FetchedMessage {
   inReplyTo: string | null;
   /** Raw References header. The envelope does not carry it, so it is fetched. */
   references: string | null;
+  /** Raw Cc header, for CC participants (R25). Filtered by domain.ts, not here. */
+  cc: string | null;
   /** The fetched header block, for auto-reply detection. */
   rawHeaders: string;
   /**
@@ -36,6 +38,14 @@ export interface FetchedMessage {
   source: Buffer | null;
   /** Attachments (R12), already bounded to the 5 MB per-email budget. */
   attachments: FetchedAttachment[];
+  /**
+   * Filenames the 5 MB budget refused (R12).
+   *
+   * Reported rather than silently dropped: the employee attached them and has
+   * no way to know they did not arrive, and a ticket whose screenshot is
+   * missing is one IT cannot work.
+   */
+  oversized: string[];
 }
 
 /**
@@ -205,13 +215,17 @@ async function readAttachments(
   client: ImapFlow,
   uid: number,
   structure: MessageStructureObject | undefined,
-): Promise<FetchedAttachment[]> {
+): Promise<{ attachments: FetchedAttachment[]; oversized: string[] }> {
   const parts = findAttachmentParts(structure);
   const attachments: FetchedAttachment[] = [];
+  const oversized: string[] = [];
   let budget = MAX_ATTACHMENT_BYTES;
 
   for (const part of parts) {
-    if (budget <= 0) break;
+    if (budget <= 0) {
+      oversized.push(part.filename);
+      continue;
+    }
     const { content } = await client.download(String(uid), part.part, { uid: true });
     const chunks: Buffer[] = [];
     let total = 0;
@@ -225,7 +239,13 @@ async function readAttachments(
       }
       chunks.push(bytes);
     }
-    if (overflowed) break;
+    if (overflowed) {
+      // Named, and the loop continues: a 6 MB video followed by a 40 KB
+      // screenshot should still deliver the screenshot. Stopping at the first
+      // refusal dropped everything after it without saying so.
+      oversized.push(part.filename);
+      continue;
+    }
     budget -= total;
     attachments.push({
       filename: part.filename,
@@ -233,7 +253,7 @@ async function readAttachments(
       content: Buffer.concat(chunks),
     });
   }
-  return attachments;
+  return { attachments, oversized };
 }
 
 /**
@@ -334,6 +354,9 @@ export async function readNewMail(
           // is misfiled as an out-of-office.
           "content-type",
           "from",
+          // CC participants (R25). The envelope carries cc, but only as a
+          // parsed structure; the raw header is what domain.ts filters.
+          "cc",
         ],
       },
       { uid: true },
@@ -372,8 +395,9 @@ export async function readNewMail(
         inReplyTo: envelope?.inReplyTo ?? readHeader(headers, "in-reply-to"),
         references: readHeader(headers, "references"),
         rawHeaders: headers,
+        cc: readHeader(headers, "cc"),
         source: message.source instanceof Uint8Array ? Buffer.from(message.source) : null,
-        attachments: await readAttachments(client, message.uid, message.bodyStructure),
+        ...(await readAttachments(client, message.uid, message.bodyStructure)),
       });
     }
 

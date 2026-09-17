@@ -12,7 +12,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readdir, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, statfs } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { config, type Config } from "./config.ts";
@@ -72,9 +72,25 @@ export function msUntilNextBackup(now: Date): number {
   return istTarget.getTime() - istNow.getTime();
 }
 
+/** The IST calendar day a backup belongs to. Both halves share it. */
+export function backupDay(now: Date): string {
+  return new Date(now.getTime() + IST_OFFSET_MINUTES * 60_000).toISOString().slice(0, 10);
+}
+
 export function backupName(now: Date): string {
-  const ist = new Date(now.getTime() + IST_OFFSET_MINUTES * 60_000);
-  return `simpletickets-${ist.toISOString().slice(0, 10)}.dump`;
+  return `simpletickets-${backupDay(now)}.dump`;
+}
+
+/**
+ * The attachment archive for the same day.
+ *
+ * Attachments live on disk, not in the database, so a `pg_dump` alone restores
+ * an `attachments` table whose every row points at a file that is not there -
+ * a backup that looks complete and is not. The two are taken together and
+ * pruned together for that reason.
+ */
+export function filesName(now: Date): string {
+  return `simpletickets-${backupDay(now)}-files.tgz`;
 }
 
 /**
@@ -95,7 +111,103 @@ export async function runBackup(config: Config, now: Date = new Date()): Promise
   return path;
 }
 
-/** Delete backups older than the retention window. Returns what it removed. */
+/**
+ * Archive the attachment and raw-message bytes (R23).
+ *
+ * `tar` rather than a library: it ships with macOS and every Linux this will
+ * run on, it streams, and adding a dependency to copy a directory is the kind
+ * of thing that needs justifying rather than assuming.
+ *
+ * Returns null when there is nothing to archive — a fresh install has no
+ * storage directory, and an empty tarball every night is noise that makes a
+ * real failure harder to see.
+ */
+export async function runFileBackup(
+  config: Config,
+  now: Date = new Date(),
+): Promise<string | null> {
+  if (!existsSync(config.storageDir)) return null;
+  await mkdir(config.backupDir, { recursive: true });
+  const path = join(config.backupDir, filesName(now));
+  // -C so the archive holds relative paths: an archive of absolute paths
+  // restores to wherever the machine that made it kept its files, which is
+  // rarely where the machine restoring it wants them.
+  await run("tar", ["-czf", path, "-C", config.storageDir, "."]);
+  return path;
+}
+
+/** Unpack an attachment archive. Destructive in the same way restoreBackup is. */
+export async function restoreFiles(archivePath: string, storageDir: string): Promise<void> {
+  await mkdir(storageDir, { recursive: true });
+  await run("tar", ["-xzf", archivePath, "-C", storageDir]);
+}
+
+/**
+ * How much room is left where the data lives (R23).
+ *
+ * Reported rather than acted on: this system cannot decide what to delete, and
+ * a backup that quietly stops because the disk filled is the failure this
+ * exists to make visible before it happens.
+ */
+export interface StorageUsage {
+  path: string;
+  bytesUsed: number;
+  files: number;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+async function directorySize(path: string): Promise<{ bytes: number; files: number }> {
+  let bytes = 0;
+  let files = 0;
+  let entries;
+  try {
+    entries = await readdir(path, { withFileTypes: true });
+  } catch {
+    return { bytes, files };
+  }
+  for (const entry of entries) {
+    const full = join(path, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await directorySize(full);
+      bytes += nested.bytes;
+      files += nested.files;
+    } else if (entry.isFile()) {
+      bytes += (await stat(full)).size;
+      files += 1;
+    }
+  }
+  return { bytes, files };
+}
+
+export async function storageUsage(path: string): Promise<StorageUsage> {
+  const { bytes, files } = await directorySize(path);
+  let freeBytes = 0;
+  let totalBytes = 0;
+  try {
+    const fs = await statfs(existsSync(path) ? path : ".");
+    freeBytes = fs.bavail * fs.bsize;
+    totalBytes = fs.blocks * fs.bsize;
+  } catch {
+    // A platform without statfs reports zeroes rather than failing /status.
+  }
+  return { path, bytesUsed: bytes, files, freeBytes, totalBytes };
+}
+
+/**
+ * Delete backups older than the retention window. Returns what it removed.
+ *
+ * Two things it deliberately will not do (R23: "safe pruning that preserves
+ * dependencies and the last usable backup"):
+ *
+ *   It never deletes the newest database dump, however old. A server that has
+ *   been off for two months would otherwise wake up, find everything past
+ *   retention, and delete the only copy it has.
+ *
+ *   It never deletes a file archive whose database dump it is keeping. The two
+ *   are one recovery point: pruning the attachments out from under a dump
+ *   leaves rows pointing at files that no longer exist anywhere.
+ */
 export async function pruneBackups(
   config: Config,
   now: Date = new Date(),
@@ -109,14 +221,28 @@ export async function pruneBackups(
   } catch {
     return removed;
   }
-  for (const entry of entries) {
-    if (!entry.endsWith(".dump")) continue;
+
+  const dumps = entries.filter((entry) => entry.endsWith(".dump")).sort();
+  const newest = dumps[dumps.length - 1];
+  const keptDays = new Set<string>();
+
+  for (const entry of dumps) {
     const full = join(config.backupDir, entry);
     const info = await stat(full);
-    if (info.mtimeMs < cutoff) {
-      await unlink(full);
-      removed.push(entry);
+    if (entry === newest || info.mtimeMs >= cutoff) {
+      keptDays.add(entry.slice(0, -".dump".length));
+      continue;
     }
+    await unlink(full);
+    removed.push(entry);
+  }
+
+  for (const entry of entries) {
+    if (!entry.endsWith("-files.tgz")) continue;
+    // "simpletickets-2026-09-17-files.tgz" belongs to "simpletickets-2026-09-17".
+    if (keptDays.has(entry.slice(0, -"-files.tgz".length))) continue;
+    await unlink(join(config.backupDir, entry));
+    removed.push(entry);
   }
   return removed;
 }
@@ -144,23 +270,80 @@ export async function restoreBackup(
 }
 
 /**
+ * The result of the most recent attempt (R23).
+ *
+ * Held here and reported by /health and /status, because a backup that started
+ * failing silently looks exactly like one that is working. A log line is not an
+ * alert: nobody reads yesterday's logs to find out whether last night worked.
+ */
+export interface BackupState {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastPath: string | null;
+  lastFilesPath: string | null;
+  lastError: string | null;
+  /** True once an attempt has failed and no later one has succeeded. */
+  failing: boolean;
+}
+
+const state: BackupState = {
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastPath: null,
+  lastFilesPath: null,
+  lastError: null,
+  failing: false,
+};
+
+export function backupState(): BackupState {
+  return { ...state };
+}
+
+/** Take both halves of a recovery point and prune. Records what happened. */
+export async function backupNow(
+  config: Config,
+  onFailure?: (error: string) => Promise<void> | void,
+): Promise<BackupState> {
+  state.lastAttemptAt = new Date().toISOString();
+  try {
+    const path = await runBackup(config);
+    const filesPath = await runFileBackup(config);
+    const pruned = await pruneBackups(config);
+    state.lastPath = path;
+    state.lastFilesPath = filesPath;
+    state.lastSuccessAt = state.lastAttemptAt;
+    state.lastError = null;
+    state.failing = false;
+    console.log(JSON.stringify({ event: "backup", path, files: filesPath, pruned: pruned.length }));
+  } catch (error) {
+    state.lastError = String(error);
+    state.failing = true;
+    console.error(JSON.stringify({ event: "backup_failed", error: state.lastError }));
+    // Never rethrown: a backup that cannot run must not stop the server that is
+    // serving tickets. The caller decides how to raise it.
+    try {
+      await onFailure?.(state.lastError);
+    } catch (alertError) {
+      console.error(JSON.stringify({ event: "backup_alert_failed", error: String(alertError) }));
+    }
+  }
+  return backupState();
+}
+
+/**
  * Schedule daily backups.
  *
- * Failures are logged, never thrown: a backup that cannot run must not stop the
- * server that is serving tickets. The next day's attempt is scheduled either
- * way, so one bad night does not end the schedule.
+ * The next day's attempt is scheduled whether or not this one worked, so one
+ * bad night does not end the schedule.
  */
-export function startBackups(config: Config): void {
+export function startBackups(
+  config: Config,
+  onFailure?: (error: string) => Promise<void> | void,
+): void {
   const schedule = (): void => {
     const timer = setTimeout(() => {
       void (async (): Promise<void> => {
-        try {
-          const path = await runBackup(config);
-          const pruned = await pruneBackups(config);
-          console.log(JSON.stringify({ event: "backup", path, pruned: pruned.length }));
-        } catch (error) {
-          console.error(JSON.stringify({ event: "backup_failed", error: String(error) }));
-        }
+        await backupNow(config, onFailure);
         schedule();
       })();
     }, msUntilNextBackup(new Date()));

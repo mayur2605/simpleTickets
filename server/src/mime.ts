@@ -22,6 +22,14 @@ export interface OutgoingMessage {
   /** Full From header value, display name optional. */
   from: string;
   to: string[];
+  /**
+   * Eligible company-domain CC participants (R25).
+   *
+   * Carried on the message rather than fanned out into one outbox row per
+   * person: a reply is one conversation, and giving each recipient their own
+   * row would make each of them a separate Message-ID that threads apart.
+   */
+  cc?: string[];
   subject: string;
   /** Plain text. Line endings are normalised and dot-stuffed here. */
   body: string;
@@ -119,6 +127,13 @@ export function buildMessage(message: OutgoingMessage): string {
     `Message-ID: ${messageId}`,
   ];
 
+  if (message.cc !== undefined && message.cc.length > 0) {
+    const copied = message.cc.map((address, index) =>
+      assertHeaderSafe(address, `cc[${String(index)}]`),
+    );
+    headers.push(`Cc: ${copied.join(", ")}`);
+  }
+
   if (message.inReplyTo !== undefined) {
     headers.push(`In-Reply-To: ${assertHeaderSafe(message.inReplyTo, "inReplyTo")}`);
   }
@@ -186,8 +201,10 @@ export function parseOutgoingMessage(json: string): OutgoingMessage {
 
   // exactOptionalPropertyTypes: absent, never explicitly undefined.
   const references = value["references"];
+  const cc = value["cc"];
   return {
     ...message,
+    ...(Array.isArray(cc) && cc.length > 0 && cc.every((x) => typeof x === "string") ? { cc } : {}),
     ...(typeof value["inReplyTo"] === "string" ? { inReplyTo: value["inReplyTo"] } : {}),
     ...(Array.isArray(references) && references.every((x) => typeof x === "string")
       ? { references }

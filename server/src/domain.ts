@@ -73,3 +73,61 @@ export function htmlToText(html: string): string {
       .trim()
   );
 }
+
+/**
+ * Split an address-list header (To, Cc) into its individual addresses.
+ *
+ * Commas inside a quoted display name are not separators — `"Lee, Sam"
+ * <sam@…>` is one recipient, and splitting on every comma turns it into two,
+ * one of which is not an address at all. Angle brackets get the same
+ * treatment for the same reason.
+ */
+export function splitAddressList(header: string | null | undefined): string[] {
+  if (header === null || header === undefined) return [];
+  const parts: string[] = [];
+  let current = "";
+  let quoted = false;
+  let angled = false;
+  for (const character of header) {
+    if (character === '"' && !angled) quoted = !quoted;
+    else if (character === "<" && !quoted) angled = true;
+    else if (character === ">" && !quoted) angled = false;
+    else if (character === "," && !quoted && !angled) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter((part) => part !== "");
+}
+
+/**
+ * R25: which CC addresses may join a ticket conversation.
+ *
+ * Exactly the approved domain, the same rule and the same reasoning as
+ * isApprovedSender — an external address copied on an internal ticket would
+ * start receiving an employee's IT correspondence, which is the one outcome
+ * this requirement exists to prevent.
+ *
+ * Excluded beyond that: our own support mailbox and the sending mailbox (they
+ * are us, and copying ourselves is how a loop starts) and anything already on
+ * the ticket, which the caller passes in `exclude`. Lower-cased and deduplicated,
+ * because `Sam@…` and `sam@…` are one person and two rows.
+ */
+export function eligibleParticipants(
+  header: string | null | undefined,
+  exclude: readonly string[],
+): string[] {
+  const blocked = new Set(exclude.map((address) => address.toLowerCase()));
+  const found = new Set<string>();
+  for (const entry of splitAddressList(header)) {
+    const address = extractAddress(entry);
+    if (address === null) continue;
+    if (address.slice(address.lastIndexOf("@") + 1) !== APPROVED_DOMAIN) continue;
+    if (blocked.has(address)) continue;
+    found.add(address);
+  }
+  return [...found];
+}

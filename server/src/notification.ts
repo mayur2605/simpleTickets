@@ -28,7 +28,8 @@ import { randomUUID } from "node:crypto";
 import type { OutgoingMessage } from "./mime.ts";
 import { subjectWithTicket } from "./acknowledgement.ts";
 
-export type NotificationKind = "assigned" | "employee_reply" | "overdue" | "delivery_failed";
+export type NotificationKind =
+  "assigned" | "employee_reply" | "overdue" | "delivery_failed" | "unassigned";
 
 export interface NotificationInput {
   kind: NotificationKind;
@@ -56,6 +57,8 @@ function headline(input: NotificationInput): string {
       return `Response overdue on ticket #${number}`;
     case "delivery_failed":
       return `Delivery failed on ticket #${number}`;
+    case "unassigned":
+      return `Ticket #${number} has nobody to work it`;
   }
 }
 
@@ -80,6 +83,14 @@ function explain(input: NotificationInput): string[] {
       return [
         "An email this ticket depends on was accepted by the mail server and then bounced.",
         "Automatic closure is paused until delivery is fixed.",
+      ];
+    case "unassigned":
+      // R24: when nobody is available the ticket is left visibly unassigned
+      // rather than handed to someone who cannot work it - which only helps if
+      // somebody is told, because an unassigned ticket has no assignee to remind.
+      return [
+        "No IT staff member was available, so this ticket has not been assigned.",
+        "The response deadline is running regardless.",
       ];
   }
 }

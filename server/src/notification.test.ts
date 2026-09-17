@@ -127,3 +127,41 @@ describe("staff notifications", () => {
     expect(body).toContain("Bcc: attacker@example.com");
   });
 });
+
+describe("the unassigned alert (R24)", () => {
+  it("says nobody has it and that the clock is still running", () => {
+    const message = buildNotification({
+      kind: "unassigned",
+      ticketNumber: 42,
+      ticketSubject: "Printer jams",
+      requester: "ananya.rao@allcheckservices.com",
+      supportAddress: "SimpleTickets <support@allcheckservices.com>",
+      dashboardUrl: "http://localhost:8787",
+      recipient: "staff1@allcheckservices.com",
+      date: new Date("2026-09-17T10:00:00.000Z"),
+    });
+    expect(message.subject).toContain("[#42]");
+    expect(message.body).toContain("has not been assigned");
+    // The deadline does not pause because nobody picked it up, and an alert
+    // that failed to say so would be read as "deal with it whenever".
+    expect(message.body).toContain("deadline is running");
+    expect(message.body).toContain("http://localhost:8787/tickets/42");
+  });
+
+  // Same guarantee as every other kind: a staff reply to this must not thread.
+  it("is one-way like the rest", () => {
+    const message = buildNotification({
+      kind: "unassigned",
+      ticketNumber: 1,
+      ticketSubject: "x",
+      requester: "a@allcheckservices.com",
+      supportAddress: "SimpleTickets <support@allcheckservices.com>",
+      dashboardUrl: "http://localhost:8787",
+      recipient: "staff1@allcheckservices.com",
+      date: new Date(),
+    });
+    expect(message.messageId).toContain("notify.unassigned.");
+    expect(message.autoSubmitted).toBe(true);
+    expect(message.replyTo).toBe("no-reply@allcheckservices.com");
+  });
+});

@@ -17,6 +17,11 @@ export interface ReplyInput {
   /** The ticket's subject, as first received. Attacker-controlled. */
   ticketSubject: string;
   requester: string;
+  /**
+   * Eligible company-domain CC participants (R25), already filtered by the
+   * caller. Empty or absent means a plain two-party reply.
+   */
+  participants?: string[];
   supportAddress: string;
   /** What IT wrote. Must not be empty. */
   body: string;
@@ -32,9 +37,17 @@ export function buildReply(input: ReplyInput): OutgoingMessage {
     throw new Error("A reply must have a body.");
   }
 
+  // The requester is always the addressee; everyone else is copied. Dropping
+  // the requester from the Cc list matters - a client that sees the same
+  // address twice shows it twice, and some send two copies.
+  const copied = (input.participants ?? []).filter(
+    (address) => address.toLowerCase() !== input.requester.toLowerCase(),
+  );
+
   const message: OutgoingMessage = {
     from: input.supportAddress,
     to: [input.requester],
+    ...(copied.length > 0 ? { cc: copied } : {}),
     subject: subjectWithTicket(input.ticketNumber, input.ticketSubject),
     body: input.body,
     messageId: `<reply.${String(input.ticketNumber)}.${String(input.date.getTime())}@simpletickets>`,
