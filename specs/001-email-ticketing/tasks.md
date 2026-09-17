@@ -14,6 +14,10 @@ inherited: on 17 September 2026 an empty database pointed at the live mailbox in
 rebuilt the same tickets, including the threaded reply, and logged three unapproved senders
 (`docs/stack-validation.md`).
 
+**Cloudflare is deleted.** The Worker, the D1 database and the `worker/` source tree were
+removed on 17 September 2026 once ingestion was proved locally against the same mailbox.
+There is no deployment to fall back to, and no cloud resource of any kind remains.
+
 **Sending is still inherited.** `MAIL_SEND` has never been on here, so every claim below
 about a message reaching a person comes from the Cloudflare deployment. The outbox composes
 and queues correctly and reports `held: true`; no SMTP connection has been opened from this

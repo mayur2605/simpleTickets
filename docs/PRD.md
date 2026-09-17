@@ -87,9 +87,10 @@ wild, and turning sending on is a decision that needs naming a sender and recipi
 2. ~~Verify trusted sender authentication, delivery and origin compatibility.~~
    **Resolved 17 September 2026.** Real employee email became real tickets and real
    acknowledgements were accepted with Gmail queue ids. The Cloudflare-origin constraint
-   that forced Gmail is gone with Cloudflare — Zimbra IMAP may well be reachable from this
-   machine, which would remove the Gmail hop and open point 5 with it. Untested; worth an
-   hour. See stack-validation.md.
+   that forced Gmail is gone with Cloudflare, which is now deleted entirely — Zimbra IMAP
+   may well be reachable from this machine, which would remove the Gmail hop and open
+   point 5 with it. `scripts/check-mail-tls.mjs` is the probe. Untested; worth an hour.
+   See stack-validation.md.
 
 3. Decide what an employee reply does to a Waiting, Resolved or closure transition whose required email has not yet been accepted: cancel the pending transition and leave the ticket open, or apply it on acceptance and let the reply reopen the ticket immediately. The approved rule in R28 covers the waiting period itself, not this collision.
 

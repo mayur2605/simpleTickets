@@ -106,5 +106,7 @@ that session.
 `server/var/` holds archived employee mail and attachments. It is git-ignored; never
 commit it, never paste its contents into a document, and never format it.
 
-Production hosting is deliberately undecided. Do not introduce a hosting or cloud
+Production hosting is deliberately undecided, and the previous cloud deployment is
+**deleted** - Worker, D1 database and the `worker/` tree, on 17 September 2026. There is
+nothing to fall back to and nothing to redeploy. Do not introduce a hosting or cloud
 dependency without asking. Keep legitimate existing files and user changes intact.

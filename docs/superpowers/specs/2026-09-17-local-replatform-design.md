@@ -34,9 +34,9 @@ application deploys to an office server, a VM or a PaaS unchanged, so deferring 
 nothing.
 
 Cloudflare stayed deployed and untouched until the local build was proven against the same
-mail. That happened on 17 September 2026, and `worker/` was then deleted — it is in git
-history if it is ever needed. The Cloudflare Worker and D1 database themselves still exist
-and are a separate cleanup.
+mail. That happened on 17 September 2026. The `simpletickets-api` Worker and the
+`simpletickets` D1 database were then deleted, and `worker/` was removed from the
+repository — it is in git history if it is ever needed. **No cloud resource remains.**
 
 ## Approach: port, not rewrite
 

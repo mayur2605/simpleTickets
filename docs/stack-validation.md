@@ -1,6 +1,21 @@
 # Stack validation
 
-Checked 16 September 2026. Status: partial validation; production architecture not yet finalized.
+**This is a chronological evidence log, not a description of the current system.** Entries
+are dated and later ones supersede earlier ones; nothing is rewritten when it turns out to
+be wrong, because the wrongness is part of the record. For what is true today, read
+`docs/superpowers/specs/2026-09-17-local-replatform-design.md` and `CLAUDE.md`.
+
+**Where things stand, 17 September 2026:**
+
+| | |
+| --- | --- |
+| Stack | Node 24 + PostgreSQL 18 + local disk, one process, no cloud dependency |
+| Cloudflare | **Deleted.** Worker, D1 database and the `worker/` source are all gone |
+| Ingestion | **Proved on this stack** — empty database rebuilt the same tickets from the live mailbox |
+| Sending | **Not proved here.** `MAIL_SEND` has never been on; nothing has left this machine |
+| Tests | 219 unit + 59 integration (PostgreSQL) on the server, 19 + browser smoke on the prototype |
+
+Everything below is the history that produced those conclusions, beginning 16 September 2026.
 
 ## Frontend decision
 
@@ -619,6 +634,11 @@ blacklisting outside our control. The answer was the credential already in hand 
 mailbox, one secret, no third-party sending reputation to depend on.
 
 What this does **not** yet prove, and must not be claimed:
+
+> **Superseded in part.** The second bullet below was true when written. The outbound
+> module, the durable outbox, retry and backoff, and R28 delivery gating are all built and
+> tested now — in `server/`, not `worker/`, which no longer exists. The *first* bullet
+> still stands: no mail has been sent from the current stack.
 
 - **No mail has been sent.** Authentication is not delivery. A real send needs explicit
   authorization naming sender and recipients, per the constitution.

@@ -12,8 +12,9 @@ queued mail, assigns tickets, notifies staff, reminds on overdue responses, clos
 tickets, stores attachments on disk and backs the database up nightly. Staff sign in with
 real per-person credentials.
 
-It has no cloud dependency. An earlier Cloudflare Workers + D1 + R2 deployment was replaced
-on the same day — see
+It has no cloud dependency, and no longer has a cloud fallback: the earlier Cloudflare
+Workers + D1 + R2 deployment was replaced and then deleted on the same day, once local
+ingestion had been proved against the same mailbox. See
 [the replatform design](docs/superpowers/specs/2026-09-17-local-replatform-design.md) for
 why, and [validation evidence](docs/stack-validation.md) for the measurements.
 

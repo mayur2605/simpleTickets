@@ -16,7 +16,9 @@ It runs entirely on this machine. There is no cloud dependency of any kind.
 
 The stack is **Node 24 + PostgreSQL 18 + the local filesystem**, in one process.
 
-This replaces Cloudflare Workers + D1 + R2, which was chosen before anything was tested and cost this project most of its debugging time: cron triggers that never fire on that account, a PBKDF2 cap of 100,000 iterations, IMAP range fetches that stall, an absent `Buffer`, a frozen `Date.now()`, and a database that could not be tested against. Every one of those problems is gone rather than worked around.
+This replaced Cloudflare Workers + D1 + R2, which was chosen before anything was tested and cost this project most of its debugging time: cron triggers that never fire on that account, a PBKDF2 cap of 100,000 iterations, IMAP range fetches that stall, an absent `Buffer`, a frozen `Date.now()`, and a database that could not be tested against. Every one of those problems is gone rather than worked around.
+
+**The Cloudflare resources are deleted** — the Worker, the D1 database and the `worker/` source tree, all on 17 September 2026 after local ingestion was proved against the same mailbox. There is no fallback to redeploy to. `worker/` is recoverable from git history if it is ever wanted.
 
 The full reasoning, the ported-versus-rewritten decision and the measured evidence are in **`docs/superpowers/specs/2026-09-17-local-replatform-design.md`**. Read it before changing the stack.
 
@@ -27,7 +29,7 @@ The full reasoning, the ported-versus-rewritten decision and the measured eviden
 - `server/` — the backend. Node, PostgreSQL, one process, its own gate.
 - `prototype/` — React 19 + TypeScript + Vite dashboard with Fluent UI v9. Built output is served by `server/`.
 - `prototype/src/domain/` — production domain rules, free of React, storage and transport. Business logic starts here, not in `main.tsx`. The server imports the business calendar from here on purpose: two implementations of the deadline rules would drift, and the UI would eventually show a different deadline from the one the system enforces.
-- `scripts/check-mail-tls.mjs` — unauthenticated Zimbra TLS probe.
+- `scripts/check-mail-tls.mjs` — unauthenticated Zimbra TLS probe. Worth re-running: it failed from Cloudflare because that host dropped Workers traffic, and that constraint is gone. If Zimbra IMAP is reachable from this machine, the Gmail hop disappears and PRD open point 5 with it.
 - `tools/mail-check/` — interactive IMAP/SMTP authentication check, run by hand, its own package.
 - `.github/workflows/` — quality gates. Nothing deploys.
 
