@@ -43,7 +43,12 @@ import {
   deleteSession,
   recordLoginFailure,
   recentFailures,
+  storeLoginCode,
+  consumeLoginCode,
+  sweepExpiredCodes,
 } from "./store.ts";
+import { buildLoginCode } from "./login-code.ts";
+import { sendMessage } from "./smtp.ts";
 import { eligibleParticipants } from "./domain.ts";
 import { safeFilename } from "./storage.ts";
 import { buildReply } from "./reply.ts";
@@ -54,6 +59,8 @@ import {
   readSessionToken,
   hashToken,
   newToken,
+  newCode,
+  codeExpiryFrom,
   sessionCookie,
   clearedCookie,
   expiryFrom,
@@ -182,6 +189,105 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
     if (!(await verifyPassword(password, account.password_hash))) {
       await recordLoginFailure(env.pool, name);
       return rejected;
+    }
+
+    // R06: the second factor. With it off, the password alone signs you in -
+    // which is what every test and every local run does, and why the setting
+    // exists rather than the behaviour being unconditional.
+    if (env.config.loginCodes) {
+      // No address, no code, and therefore no way in. Answered like any other
+      // failure rather than "this account has no email", which would say which
+      // accounts are misconfigured to anyone who asks.
+      const to = account.email;
+      if (to === null || to === "") {
+        await recordLoginFailure(env.pool, name);
+        return rejected;
+      }
+      const code = newCode();
+      await sweepExpiredCodes(env.pool, new Date());
+      await storeLoginCode(
+        env.pool,
+        account.name,
+        await hashToken(code),
+        codeExpiryFrom(new Date()),
+      );
+      // Sent inline rather than queued. Everything else in this system is
+      // queued because nobody is waiting for it; somebody IS waiting for this,
+      // and a code that arrives on the next two-minute poll is a code nobody
+      // will use. A failure here is reported rather than swallowed: silently
+      // "sending" a code that never left is how a person sits refreshing an
+      // inbox.
+      try {
+        await sendMessage({
+          user: env.config.gmailUser,
+          appPassword: env.config.gmailAppPassword,
+          message: buildLoginCode({
+            code,
+            recipient: to,
+            supportAddress: `SimpleTickets <${env.config.supportAddress}>`,
+            date: new Date(),
+          }),
+          envelopeFrom: env.config.gmailUser,
+          envelopeTo: [to],
+        });
+      } catch (error) {
+        console.error(JSON.stringify({ event: "login_code_failed", error: String(error) }));
+        return Response.json(
+          { error: "Could not send your sign-in code. Tell your administrator." },
+          { status: 502 },
+        );
+      }
+      // No session yet, and no cookie. The password has been accepted and
+      // nothing more.
+      return Response.json({ codeRequired: true, name: account.name });
+    }
+
+    const token = newToken();
+    await createSession(env.pool, await hashToken(token), account.name, expiryFrom(new Date()));
+    return new Response(JSON.stringify({ name: account.name, isAdmin: account.is_admin }), {
+      status: 200,
+      headers: { "content-type": "application/json", "Set-Cookie": sessionCookie(token) },
+    });
+  }
+
+  /**
+   * The second step of sign-in (R06).
+   *
+   * Throttled by the same per-account counter as the password, so an attacker
+   * who has the password cannot grind codes freely - five wrong codes on the
+   * row, and the account's failure count, both push back.
+   *
+   * Every failure returns the same message. Distinguishing "expired" from
+   * "wrong" from "no code was issued" would confirm which accounts have had a
+   * code sent, which is to say which passwords are already known.
+   */
+  if (url.pathname === "/api/login/verify" && request.method === "POST") {
+    const body = await readJson(request);
+    const name = body["name"];
+    const code = body["code"];
+    if (typeof name !== "string" || typeof code !== "string") {
+      return Response.json({ error: "name and code are required" }, { status: 400 });
+    }
+
+    const since = new Date(Date.now() - LOCKOUT_MINUTES * 60_000).toISOString();
+    if ((await recentFailures(env.pool, name, since)) >= MAX_FAILURES) {
+      return Response.json(
+        { error: `Too many attempts. Try again in ${String(LOCKOUT_MINUTES)} minutes.` },
+        { status: 429 },
+      );
+    }
+
+    const outcome = await consumeLoginCode(env.pool, name, await hashToken(code), new Date());
+    if (outcome !== "accepted") {
+      await recordLoginFailure(env.pool, name);
+      return Response.json({ error: "That code is not right" }, { status: 401 });
+    }
+
+    // Re-read the account rather than trusting the earlier step: it may have
+    // been disabled in the ten minutes since the password was accepted.
+    const account = await findStaff(env.pool, name);
+    if (account === null || !account.enabled) {
+      return Response.json({ error: "That code is not right" }, { status: 401 });
     }
 
     const token = newToken();

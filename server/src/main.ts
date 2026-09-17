@@ -208,6 +208,20 @@ app.get("*", async (c) => {
 });
 
 async function main(): Promise<void> {
+  // R06: refuse to start rather than lock everybody out.
+  //
+  // A sign-in code goes over SMTP. With LOGIN_CODES on and no way to send one,
+  // every staff member gets as far as their password and then waits for an
+  // email that will never arrive - and the server has no way to tell them why.
+  // Failing here is loud, immediate, and happens to whoever changed the
+  // setting rather than to five people the next morning.
+  if (config.loginCodes && (!config.mailSend || !mailConfigured())) {
+    throw new Error(
+      "LOGIN_CODES=on needs MAIL_SEND=on and Gmail credentials, or nobody can sign in. " +
+        "See docs/operations.md.",
+    );
+  }
+
   const applied = await migrate(config.databaseUrl);
   if (applied.length > 0) console.log(JSON.stringify({ event: "migrated", applied }));
 

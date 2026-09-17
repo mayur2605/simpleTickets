@@ -63,6 +63,41 @@ export function isExpired(expiresAt: string, now: Date): boolean {
   return Number.isNaN(at) || at <= now.getTime();
 }
 
+/**
+ * A six-digit sign-in code (R06).
+ *
+ * Six digits rather than a long random string because a person reads it out of
+ * an email and types it in, and a code nobody can transcribe gets pasted
+ * around. What makes six digits safe is not the code: it is the ten-minute
+ * expiry and the five-guess limit, which together give an attacker at most five
+ * tries at one in a million.
+ *
+ * Generated with rejection sampling rather than `% 1000000`, which would make
+ * the low codes very slightly more likely - a small bias, but there is no
+ * reason to accept one in a credential.
+ */
+export const CODE_DIGITS = 6;
+export const CODE_MINUTES = 10;
+export const MAX_CODE_ATTEMPTS = 5;
+
+export function newCode(): string {
+  const ceiling = 10 ** CODE_DIGITS;
+  // 2^32 is not a multiple of 10^6, so the top of the range is rejected rather
+  // than folded back over the bottom.
+  const limit = Math.floor(0x1_0000_0000 / ceiling) * ceiling;
+  const buffer = new Uint32Array(1);
+  let drawn: number;
+  do {
+    crypto.getRandomValues(buffer);
+    drawn = buffer[0] ?? 0;
+  } while (drawn >= limit);
+  return String(drawn % ceiling).padStart(CODE_DIGITS, "0");
+}
+
+export function codeExpiryFrom(now: Date): string {
+  return new Date(now.getTime() + CODE_MINUTES * 60_000).toISOString();
+}
+
 /** 256 bits of randomness, hex encoded. */
 export function newToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));

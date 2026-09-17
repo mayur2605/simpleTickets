@@ -65,7 +65,7 @@ For UI work, run `npm run dev` in `prototype/` as well and use `http://localhost
 
 ## Commands
 
-**Server** (`server/`) — the gate is 248 unit tests and 153 against real PostgreSQL:
+**Server** (`server/`) — the gate is 258 unit tests and 176 against real PostgreSQL:
 
 ```bash
 npm run dev           # watch mode
@@ -108,7 +108,8 @@ Both gates are the same standard: strict type-aware ESLint, zero warnings, no ex
 | `assignment.ts` | Fewest open tickets, round robin for ties (R07) | Yes |
 | `domain.ts` | Also: CC eligibility and address-list splitting (R25) | Yes |
 | `password.ts` | scrypt hashing, plus the legacy PBKDF2 verifier | Yes |
-| `session.ts` | Cookie shape, token hashing, expiry | Yes |
+| `session.ts` | Cookie shape, token hashing, expiry, sign-in codes | Yes |
+| `login-code.ts` | The email carrying a sign-in code (R06) | Yes |
 | `auth.ts` | Admin token comparison, fails closed | Yes |
 | `health.ts` | Whether the mail loop has stalled | Yes |
 | `storage.ts` | Local files: raw messages, attachments, path safety | No — disk |
@@ -190,6 +191,10 @@ Beyond the obvious ticket routes:
 ## Authentication
 
 Staff sign in with a name and password (R06). Sessions are HttpOnly, Secure, SameSite=Strict cookies whose tokens are stored hashed. Passwords are scrypt (N=2¹⁶, r=8, p=2), and the stored format records its own parameters so the cost can be raised later without invalidating anyone's password. The Cloudflare-era chained-PBKDF2 verifier is retained so an older password still works.
+
+**Sign-in codes (R06) are behind `LOGIN_CODES`, off by default.** With it on, a correct password grants no session — it emails a six-digit code, and `POST /api/login/verify` exchanges that for one. The code is hashed at rest, lasts ten minutes, dies after five guesses, is single use, and there is one outstanding per account. The server **refuses to start** with `LOGIN_CODES=on` and no way to send, because a code that cannot be delivered locks out every staff member and the system has no way to tell them why. The code email carries no link: a sign-in email with a clickable link is the shape of every credential phishing message, and training staff to click one is worse than typing six digits.
+
+Unlike everything else outbound, the code is sent **inline rather than queued**. Somebody is waiting for it; a code that arrives on the next two-minute poll is a code nobody will use. A send failure answers 502 rather than being swallowed.
 
 **Bootstrapping the first password is deliberately a command-line action.** Only an admin session may provision a password, and a fresh database has no account with one, so the API has no way to create the first — which is the safe direction. `npm run db:seed -- --password staff1` fills the gap from the machine, where whoever runs it already has the database.
 
@@ -283,5 +288,5 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 - **Login leaks account existence by timing**, accepted and recorded — see `docs/stack-validation.md`.
 - What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity *detection* (open point 4 — the `ambiguous` state and the resend path exist; the detection rule does not).
 - **Backups sit on the same disk as the database.** That is not a backup against losing the disk. An off-machine copy waits on the hosting decision (PRD open point 9).
-- **Emailed verification codes and account recovery are not built** (R06).
+- **Account recovery is not built** (R06). Emailed sign-in codes now are, behind `LOGIN_CODES`.
 - **The inherited stylesheets are desktop-first.** New CSS is mobile-first; `style.css` and `brand.css` are not, and inverting 1651 lines of append-only design iterations is a rewrite with regression risk and no behavioural gain. A pass with an actual screen reader is also still open — no automated check substitutes for it (T028).

@@ -44,6 +44,7 @@ import "./brand.css";
 import {
   probeBackend,
   login as apiLogin,
+  verifyCode as apiVerifyCode,
   logout as apiLogout,
   fetchTickets,
   fetchTicket,
@@ -242,6 +243,12 @@ function Status({ value }: { value: string }) {
 function SignIn({ onSignedIn }: { onSignedIn: (identity: Identity) => void }) {
   const [name, setName] = useState(""),
     [password, setPassword] = useState(""),
+    [code, setCode] = useState(""),
+    // R06: set once the server asks for an emailed code. The password field is
+    // not cleared behind it - going back to it would need the password again,
+    // and a form that silently discards what was typed is a form people
+    // distrust.
+    [codeWanted, setCodeWanted] = useState(false),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
 
@@ -250,13 +257,21 @@ function SignIn({ onSignedIn }: { onSignedIn: (identity: Identity) => void }) {
     if (busy) return;
     setBusy(true);
     setError("");
-    void apiLogin(name, password)
-      .then(onSignedIn)
+    void (codeWanted ? apiVerifyCode(name, code) : apiLogin(name, password))
+      .then((identity) => {
+        if (identity === null) {
+          // The password was right and the server has emailed a code.
+          setCodeWanted(true);
+          return;
+        }
+        onSignedIn(identity);
+      })
       .catch((problem: unknown) => {
         // The server says the same thing for every failure, on purpose. It is
         // repeated verbatim rather than interpreted here, so the UI cannot
         // accidentally reveal which half was wrong.
         setError(problem instanceof Error ? problem.message : String(problem));
+        setCode("");
       })
       .finally(() => {
         setBusy(false);
@@ -270,26 +285,47 @@ function SignIn({ onSignedIn }: { onSignedIn: (identity: Identity) => void }) {
           <TicketDiagonal24Regular />
         </span>
         <h1>SimpleTickets</h1>
-        <p>Sign in to the IT dashboard.</p>
+        <p>
+          {codeWanted
+            ? "We have emailed you a six-digit code. It expires in ten minutes."
+            : "Sign in to the IT dashboard."}
+        </p>
         <Field label="Name">
           <Input
             value={name}
             autoComplete="username"
+            disabled={codeWanted}
             onChange={(_, d) => {
               setName(d.value);
             }}
           />
         </Field>
-        <Field label="Password">
-          <Input
-            type="password"
-            value={password}
-            autoComplete="current-password"
-            onChange={(_, d) => {
-              setPassword(d.value);
-            }}
-          />
-        </Field>
+        {codeWanted ? (
+          <Field label="Sign-in code">
+            <Input
+              value={code}
+              // one-time-code so a phone offers the code from the email, and
+              // inputMode so a phone shows digits rather than a full keyboard.
+              autoComplete="one-time-code"
+              inputMode="numeric"
+              maxLength={6}
+              onChange={(_, d) => {
+                setCode(d.value.replace(/\D/g, ""));
+              }}
+            />
+          </Field>
+        ) : (
+          <Field label="Password">
+            <Input
+              type="password"
+              value={password}
+              autoComplete="current-password"
+              onChange={(_, d) => {
+                setPassword(d.value);
+              }}
+            />
+          </Field>
+        )}
         {error !== "" && (
           <MessageBar intent="error">
             <MessageBarBody>{error}</MessageBarBody>
@@ -298,13 +334,14 @@ function SignIn({ onSignedIn }: { onSignedIn: (identity: Identity) => void }) {
         <Button
           appearance="primary"
           type="submit"
-          disabled={busy || name === ""}
+          disabled={busy || name === "" || (codeWanted && code.length < 6)}
         >
-          {busy ? "Signing in..." : "Sign in"}
+          {busy ? "Signing in..." : codeWanted ? "Verify code" : "Sign in"}
         </Button>
         <small>
-          Accounts are created by an administrator. There is no
-          self-registration.
+          {codeWanted
+            ? "Nobody from IT will ever ask you for this code."
+            : "Accounts are created by an administrator. There is no self-registration."}
         </small>
       </form>
     </div>

@@ -8,8 +8,8 @@ serves the dashboard, polls the mailbox, sends queued mail, assigns tickets, not
 staff, reminds on overdue responses, closes resolved tickets, stores attachments and backs
 the database up nightly. All eight decisions approved on 16 September 2026 are implemented.
 
-**What "built" does and does not mean here.** The server gate passes with 248 unit tests
-and 153 integration tests against real PostgreSQL; the prototype gate passes 19 unit tests,
+**What "built" does and does not mean here.** The server gate passes with 258 unit tests
+and 176 integration tests against real PostgreSQL; the prototype gate passes 19 unit tests,
 a browser smoke run and a production build. Ingestion is measured on this stack, not
 inherited: on 17 September 2026 an empty database pointed at the live mailbox independently
 rebuilt the same tickets, including the threaded reply, and logged three unapproved senders
@@ -98,7 +98,7 @@ A local prototype privacy regression was fixed and verified; see
 
 - [~] T028 Extend strict type/lint/format/CI gates to the production backend, add test-first domain and integration suites, and migrate prototype CSS to mobile-first with accessibility and cross-browser validation. See docs/engineering-standards.md.
   Backend: the same gate as the prototype - strict type-aware ESLint at zero warnings,
-  Prettier, typecheck, **248 unit tests and 153 integration tests** against real PostgreSQL,
+  Prettier, typecheck, **258 unit tests and 176 integration tests** against real PostgreSQL,
   wired into `server`'s `npm run verify`. The integration suites are new and were the
   standing gap: under D1 `store.ts` could only run against Cloudflare's hosted database, so
   the batches, the claim and the R28 ordering were verified by reading them.
@@ -167,8 +167,28 @@ A local prototype privacy regression was fixed and verified; see
   used to work. `identify` re-checks on every request, covering a DELETE racing a request
   already in flight. An admin cannot disable their own account: only an admin may re-enable
   one, and only from a session that call would have just deleted.
-  **Not done:** email-code sign-in and account recovery. Brute-force limits are tested;
-  expiry and reuse are unit tested but not exercised against a live clock.
+  **Email-code sign-in landed on 17 September** (R06). Six digits, because a person reads
+  them out of an email and types them in, and a code nobody can transcribe gets pasted
+  around. What makes six digits safe is not the code: it is the ten-minute expiry and the
+  five-guess limit, which together give an attacker five tries at one in a million. Stored
+  hashed, single use, one outstanding per account - asking for a new code destroys the old
+  one, so an intercepted code cannot be held in reserve.
+  The password step grants NO session: it accepts the password and emails a code, nothing
+  more. The code step re-reads the account rather than trusting the first step, because ten
+  minutes is long enough for an admin to disable it. Every failure returns the same message,
+  including "no code was ever issued" - distinguishing them confirms which accounts have had
+  one sent, which is to say which passwords are already known.
+  Both races are asserted against the real database: two wrong guesses arriving together
+  count as two, and two correct ones let exactly one through.
+  **Off by default**, and the server refuses to start with it on and no way to send. A code
+  that goes over SMTP while `MAIL_SEND` is off locks every staff member out of a system that
+  cannot tell them why; failing at startup puts that in front of whoever changed the setting
+  instead of in front of five people the next morning.
+  The code email carries no link, deliberately: a sign-in email with a clickable link is the
+  shape of every credential phishing message ever sent, and training staff to click one is
+  worse than the inconvenience of typing six digits.
+  **Not done:** account recovery. Expiry and reuse are now exercised against a real database
+  and a supplied clock rather than unit tested alone.
 - [x] T009 Implement shared business calendar and deadline calculation; test all spec boundary examples and Sunday new-ticket/reply behavior and preservation of earlier pending deadlines.
   Done: `prototype/src/domain/business-calendar.ts`, 19 passing Vitest cases covering the four spec examples, the working-window boundaries at 09:00/18:00, Saturday-to-Monday carry, and the no-postponement rule. Domain rule only — no ticket store consumes it yet; wiring belongs to T007/T016.
 

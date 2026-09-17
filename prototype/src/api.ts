@@ -199,12 +199,37 @@ export async function probeBackend(): Promise<{
   }
 }
 
-export async function login(name: string, password: string): Promise<Identity> {
+/**
+ * Step one of sign-in.
+ *
+ * Returns `null` when the server wants an emailed code as well (R06), which the
+ * caller answers with `verifyCode`. Null rather than a thrown error because
+ * needing a second factor is a successful first step, not a failure.
+ */
+export async function login(
+  name: string,
+  password: string,
+): Promise<Identity | null> {
   const body = await call("/api/login", {
     method: "POST",
     body: JSON.stringify({ name, password }),
   });
   if (!isRecord(body)) throw new Error("Unexpected response from /api/login");
+  if (body["codeRequired"] === true) return null;
+  return { name: String(body["name"]), isAdmin: body["isAdmin"] === true };
+}
+
+/** Step two: the six digits that were emailed (R06). */
+export async function verifyCode(
+  name: string,
+  code: string,
+): Promise<Identity> {
+  const body = await call("/api/login/verify", {
+    method: "POST",
+    body: JSON.stringify({ name, code }),
+  });
+  if (!isRecord(body))
+    throw new Error("Unexpected response from /api/login/verify");
   return { name: String(body["name"]), isAdmin: body["isAdmin"] === true };
 }
 

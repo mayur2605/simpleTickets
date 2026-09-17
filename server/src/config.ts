@@ -48,6 +48,16 @@ export interface Config {
   pgBin: string;
   /** Where staff read tickets. Every notification links here (R15). */
   dashboardUrl: string;
+  /**
+   * Whether sign-in requires an emailed code as well as a password (R06).
+   *
+   * OFF by default, and that default is the safe one rather than the lax one:
+   * the code is sent over SMTP, so turning this on while `MAIL_SEND` is off
+   * would lock every staff member out of a system that cannot tell them why.
+   * `mailCredentials()` is required for it, and main.ts refuses to start with
+   * it on and no way to send.
+   */
+  loginCodes: boolean;
 }
 
 export const config: Config = {
@@ -63,6 +73,7 @@ export const config: Config = {
   mailSend: optional("MAIL_SEND", "off") === "on",
   pgBin: optional("PG_BIN", ""),
   dashboardUrl: optional("DASHBOARD_URL", `http://localhost:${optional("PORT", "8787")}`),
+  loginCodes: optional("LOGIN_CODES", "off") === "on",
 };
 
 /** Mail credentials are only required by the parts that actually touch mail. */

@@ -35,6 +35,7 @@ browser bundle holds no token.
 | `MAIL_SEND` | sending | off unless exactly `on`; intents are composed and queued but nothing reaches the wire |
 | `STORAGE_DIR`, `BACKUP_DIR` | attachments, backups | default to `./var/storage` and `./var/backups` |
 | `PG_BIN` | backups | probed from the known install locations; set it if `pg_dump` is somewhere else |
+| `LOGIN_CODES` | the second sign-in factor (R06) | off unless exactly `on`; **needs `MAIL_SEND=on` and credentials, or the server refuses to start** |
 | `DASHBOARD_URL` | notification links | defaults to `http://localhost:PORT`, which is wrong for anyone but you |
 
 `.env` is git-ignored and the pre-commit hook refuses to stage one. Node reads
@@ -56,6 +57,27 @@ it natively via `--env-file-if-exists`, so there is no `dotenv` dependency.
 Off is the default on purpose. The usual reason to run this locally is to
 develop against the real mailbox, and a second acknowledgement for a ticket
 another system already answered lands in a real person's inbox.
+
+### Turning sign-in codes on
+
+`LOGIN_CODES=on` makes every sign-in require a six-digit code emailed to the
+staff member as well as their password (R06). It is off by default, and that
+default is the safe one rather than the lax one: the code goes out over SMTP, so
+turning it on while `MAIL_SEND` is off leaves every staff member waiting for an
+email that will never arrive, with no way for the system to tell them why.
+
+**The server refuses to start** with `LOGIN_CODES=on` and no way to send. That
+failure is loud, immediate, and lands on whoever changed the setting rather than
+on five people the next morning.
+
+Before turning it on, check every account has an `email` — an account without
+one cannot receive a code and cannot sign in. `GET /api/staff` shows it.
+
+If somebody is locked out: codes expire in ten minutes and die after five wrong
+guesses, and the per-account throttle locks the account for fifteen minutes after
+five failures of either kind. Waiting is the fix. If mail itself is broken, set
+`LOGIN_CODES=off` and restart — that is the documented escape hatch, and it is
+why the setting exists rather than the behaviour being unconditional.
 
 ---
 

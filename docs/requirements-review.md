@@ -13,7 +13,7 @@ Three columns of honesty are worth naming before the table, because the word
 - **Inherited** — it worked on the Cloudflare deployment and the code was ported.
   That is evidence about the old system, not this one.
 
-The gate behind all of it: **248 unit tests and 153 against real PostgreSQL** in
+The gate behind all of it: **258 unit tests and 176 against real PostgreSQL** in
 `server/`, **19 unit tests plus a browser smoke run and a production build** in
 `prototype/`, with the same smoke run repeated on Firefox and WebKit in their own CI job. Re-run it rather than trusting this sentence.
 
@@ -26,7 +26,7 @@ The gate behind all of it: **248 unit tests and 153 against real PostgreSQL** in
 | **R03** | Replies append to the same ticket | **Proved here** | The rebuild threaded one reply onto its existing ticket. Matching is on Message-ID only, never the `[#42]` in a subject. Folded `References` headers are walked line by line, after a regex version silently dropped every continuation. |
 | **R04** | IT works only in the dashboard | **Tested** | No staff email relay exists; inbound staff mail is rejected like any other unapproved sender, and a reply to a one-way notification is recorded `notification_reply` rather than threaded. |
 | **R05** | Admin creates and disables accounts; disabling ends access | **Tested** | `setEnabled` flips the flag and deletes that account's sessions in one transaction; the API redistributes their open tickets in the same call. Sign-in is refused with the same message as a wrong password. An admin cannot disable their own account. |
-| **R06** | Password sign-in, plus emailed verification codes | **Partly** | Passwords: scrypt (N=2¹⁶, r=8, p=2), per-account throttling with a 15-minute lockout, HttpOnly/Secure/SameSite=Strict cookies with hashed tokens. **Emailed verification codes are not built.** |
+| **R06** | Password sign-in, plus emailed verification codes | **Tested** | Passwords: scrypt (N=2¹⁶, r=8, p=2), per-account throttling with a 15-minute lockout, HttpOnly/Secure/SameSite=Strict cookies with hashed tokens. Codes: six digits, hashed at rest, ten-minute expiry, five guesses, single use, one outstanding per account. The password step grants no session at all. Both races are asserted against the real database — two wrong guesses at once count as two, and two correct ones let exactly one through. Off by default, because a code sent over SMTP while `MAIL_SEND` is off locks everybody out; the server refuses to start in that combination. **Account recovery is still not built.** |
 | **R07** | Fewest open tickets, round robin for ties | **Proved here** | Applied on ingest and from the dashboard, and serialised by an advisory lock — two assignments deciding at once would otherwise both pick the same least-loaded person. Asserted by racing two against two idle staff. `assignable` ANDs availability with account access in one place, so no caller can hand work to a disabled account. |
 | **R08** | Admin-only availability; skip unavailable staff; redistribute | **Tested** | Redistribution moves tickets one at a time, re-reading workloads each round — one pass would dump the queue on whoever was least loaded at the start. Restoring availability picks up unowned tickets and only those. A ticket nobody can take emails every admin. |
 | **R09** | Five statuses; Waiting for Employee needs an emailed request | **Tested** | `transitionRule` is the whole of it: which changes are internal, which require a message, and which are refused. Empty reply bodies are rejected. |
@@ -73,7 +73,7 @@ summary is:
 
 | | What is missing |
 | --- | --- |
-| R06 | Emailed verification codes; account recovery |
+| R06 | Account recovery |
 | R14 | Replies still go out from the Gmail address |
 | R15 | Nothing has been delivered — `MAIL_SEND` is off |
 | R23 | Hosting undecided, by choice |

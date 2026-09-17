@@ -13,7 +13,7 @@ be wrong, because the wrongness is part of the record. For what is true today, r
 | Cloudflare | **Deleted.** Worker, D1 database and the `worker/` source are all gone |
 | Ingestion | **Proved on this stack** — empty database rebuilt the same tickets from the live mailbox |
 | Sending | **Not proved here.** `MAIL_SEND` has never been on; nothing has left this machine |
-| Tests | 248 unit + 153 integration (PostgreSQL) on the server, 19 + a browser smoke run on the prototype — repeated on Firefox and WebKit in their own CI job |
+| Tests | 258 unit + 176 integration (PostgreSQL) on the server, 19 + a browser smoke run on the prototype — repeated on Firefox and WebKit in their own CI job |
 
 **Measured on this stack, 17 September 2026** (all four run in the gate, so they cannot go
 stale silently):

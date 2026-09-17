@@ -15,6 +15,7 @@
 import type { Pool } from "pg";
 import { type Db, withTransaction } from "./db/pool.ts";
 import type { StaffWorkload } from "./assignment.ts";
+import { MAX_CODE_ATTEMPTS } from "./session.ts";
 
 export interface Checkpoint {
   uidValidity: string;
@@ -1107,6 +1108,8 @@ export async function getAttachment(db: Db, id: number): Promise<AttachmentRow |
 
 export interface StaffAccount {
   name: string;
+  /** Where a sign-in code goes (R06). Null means this account cannot receive one. */
+  email: string | null;
   password_hash: string | null;
   is_admin: boolean;
   available: boolean;
@@ -1115,7 +1118,7 @@ export interface StaffAccount {
 
 export async function findStaff(db: Db, name: string): Promise<StaffAccount | null> {
   const { rows } = await db.query<StaffAccount>(
-    `SELECT name, password_hash, is_admin, available, enabled FROM staff WHERE name = $1`,
+    `SELECT name, email, password_hash, is_admin, available, enabled FROM staff WHERE name = $1`,
     [name],
   );
   return rows[0] ?? null;
@@ -1515,4 +1518,98 @@ export async function requeueIntent(db: Db, id: number): Promise<boolean> {
     [new Date().toISOString(), id],
   );
   return (rowCount ?? 0) > 0;
+}
+
+/* --------------------------------------------------------- sign-in codes */
+
+/**
+ * Store a sign-in code, replacing any outstanding one (R06).
+ *
+ * One row per account: asking for a new code invalidates the previous one, so a
+ * code intercepted a minute ago cannot be held in reserve while its owner
+ * carries on signing in.
+ */
+export async function storeLoginCode(
+  db: Db,
+  name: string,
+  codeHash: string,
+  expiresAt: string,
+): Promise<void> {
+  await db.query(
+    `INSERT INTO login_codes (staff_name, code_hash, attempts, expires_at, created_at)
+     VALUES ($1, $2, 0, $3, $4)
+     ON CONFLICT (staff_name) DO UPDATE SET
+       code_hash  = excluded.code_hash,
+       attempts   = 0,
+       expires_at = excluded.expires_at,
+       created_at = excluded.created_at`,
+    [name, codeHash, expiresAt, new Date().toISOString()],
+  );
+}
+
+export type CodeResult = "accepted" | "wrong" | "expired" | "exhausted" | "none";
+
+/**
+ * Check a sign-in code and consume it (R06).
+ *
+ * Everything happens in one transaction with the row locked, because this is
+ * the statement an attacker would race: two guesses arriving together must
+ * count as two attempts, and a correct code must be usable exactly once.
+ *
+ * The outcomes are distinguished for the CALLER's benefit, not the user's - the
+ * API answers "that code is not right" to all of them, because telling somebody
+ * their code expired confirms a code was issued for that account.
+ */
+export async function consumeLoginCode(
+  pool: Pool,
+  name: string,
+  codeHash: string,
+  now: Date,
+): Promise<CodeResult> {
+  return withTransaction(pool, async (db) => {
+    const { rows } = await db.query<{
+      code_hash: string;
+      attempts: number;
+      expires_at: string;
+    }>(
+      `SELECT code_hash, attempts, expires_at FROM login_codes
+        WHERE staff_name = $1 FOR UPDATE`,
+      [name],
+    );
+    const row = rows[0];
+    if (row === undefined) return "none";
+
+    const drop = async (): Promise<void> => {
+      await db.query(`DELETE FROM login_codes WHERE staff_name = $1`, [name]);
+    };
+
+    // An expiry we cannot read counts as expired: a malformed row must never
+    // grant access.
+    const expiry = Date.parse(row.expires_at);
+    if (Number.isNaN(expiry) || expiry <= now.getTime()) {
+      await drop();
+      return "expired";
+    }
+    if (row.attempts >= MAX_CODE_ATTEMPTS) {
+      await drop();
+      return "exhausted";
+    }
+    if (row.code_hash !== codeHash) {
+      await db.query(`UPDATE login_codes SET attempts = attempts + 1 WHERE staff_name = $1`, [
+        name,
+      ]);
+      return "wrong";
+    }
+    // Single use. Deleted rather than marked, so a replay finds nothing at all.
+    await drop();
+    return "accepted";
+  });
+}
+
+/** Throw away codes nobody used. Swept on each new code rather than on a timer. */
+export async function sweepExpiredCodes(db: Db, now: Date): Promise<number> {
+  const { rowCount } = await db.query(`DELETE FROM login_codes WHERE expires_at <= $1`, [
+    now.toISOString(),
+  ]);
+  return rowCount ?? 0;
 }

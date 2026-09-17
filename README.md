@@ -64,7 +64,7 @@ proxies `/api` so the session behaves exactly as it does in production.
 Two packages, two gates, both must pass before a commit:
 
 ```bash
-cd server    && npm run verify   # typecheck, lint, format, 248 unit + 153 database tests
+cd server    && npm run verify   # typecheck, lint, format, 258 unit + 176 database tests
 cd prototype && npm run verify   # typecheck, lint, format, unit, browser smoke, build
 ```
 
