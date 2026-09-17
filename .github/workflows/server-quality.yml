@@ -49,11 +49,16 @@ jobs:
 
     env:
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/simpletickets_test
+      # Named explicitly, not left to PATH. `apt install postgresql-client-18`
+      # installs here but leaves /usr/bin/pg_dump on the distro's older version,
+      # so the install step succeeds and pg_dump then refuses the 18 server with
+      # "aborting because of server version mismatch".
+      PG_BIN: /usr/lib/postgresql/18/bin
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # Node 24: the server runs TypeScript directly by type stripping, with
           # no bundler and no tsx. An older Node cannot start it.
