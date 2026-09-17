@@ -58,6 +58,21 @@ Off is the default on purpose. The usual reason to run this locally is to
 develop against the real mailbox, and a second acknowledgement for a ticket
 another system already answered lands in a real person's inbox.
 
+**Turn it off again when you are done.** The 17 September acceptance run is the
+pattern worth copying: check the outbox is empty, stop the ticker, switch on, run
+the thing you authorised, switch off, restart. Leaving it on means the machine
+answers every employee who writes in — which is the intended production
+behaviour, but not usually what you want from a laptop that sleeps.
+
+Confirm the gate either way with a flush rather than by reading `.env`:
+
+```bash
+curl -s -X POST -H "x-admin-token: $ADMIN_TOKEN" localhost:8787/flush
+```
+
+`{"sent":0,...,"held":true}` means closed. No `held` key means it is open and the
+queue is being delivered.
+
 ### Turning sign-in codes on
 
 `LOGIN_CODES=on` makes every sign-in require a six-digit code emailed to the
