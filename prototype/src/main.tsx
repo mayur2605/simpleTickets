@@ -55,6 +55,7 @@ import {
   addNote as postNote,
   setStatus as apiSetStatus,
   assign as apiAssign,
+  setPriority as apiSetPriority,
   addParticipants as apiAddParticipants,
   removeParticipant as apiRemoveParticipant,
   setStaffFlag,
@@ -1106,7 +1107,17 @@ function App() {
                       <Field label="Priority">
                         <Select
                           value={current.priority}
+                          disabled={busy}
                           onChange={(e) => {
+                            const priority = e.target.value;
+                            if (live) {
+                              act(
+                                current.id,
+                                () => apiSetPriority(current.id, priority),
+                                `Priority set to ${priority}. The response deadline is unchanged - every priority gets the same four working hours.`,
+                              );
+                              return;
+                            }
                             setTickets(
                               tickets.map((t) =>
                                 t.id === current.id

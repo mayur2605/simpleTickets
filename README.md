@@ -9,8 +9,10 @@ back to it.
 **Status, 17 September 2026: a complete application that runs locally.** One Node process
 serves the API, serves the dashboard, polls the support mailbox every two minutes, sends
 queued mail, assigns tickets, notifies staff, reminds on overdue responses, closes resolved
-tickets, stores attachments on disk and backs the database up nightly. Staff sign in with
-real per-person credentials.
+tickets, stores attachments on disk, and backs up the database and the attachment bytes
+nightly. Staff sign in with real per-person credentials. Colleagues CC'd on an employee's
+email join the ticket and are copied on replies; every change is audited; disabling an
+account revokes access and moves its work; reply templates carry their own status mappings.
 
 It has no cloud dependency, and no longer has a cloud fallback: the earlier Cloudflare
 Workers + D1 + R2 deployment was replaced and then deleted on the same day, once local
@@ -22,6 +24,11 @@ Ingestion is proved: on 17 September 2026 an empty database pointed at the live 
 independently rebuilt the same tickets the previous deployment held, including the threaded
 reply. **Sending is not** — `MAIL_SEND` has never been on here, so nothing this server
 composes has reached a person yet.
+
+Where every requirement actually stands is in
+[the requirement review](docs/requirements-review.md), which separates what is proved on
+this stack from what is only asserted by the test suite. Running it, watching it and
+recovering it are in [operations](docs/operations.md).
 
 ## Running it
 
@@ -57,7 +64,7 @@ proxies `/api` so the session behaves exactly as it does in production.
 Two packages, two gates, both must pass before a commit:
 
 ```bash
-cd server    && npm run verify   # typecheck, lint, format, 219 unit + 59 database tests
+cd server    && npm run verify   # typecheck, lint, format, 245 unit + 130 database tests
 cd prototype && npm run verify   # typecheck, lint, format, unit, browser smoke, build
 ```
 

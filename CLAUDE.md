@@ -8,7 +8,9 @@ Read `AGENTS.md` and `docs/engineering-standards.md` first — they are the bind
 
 SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it.
 
-**Current status:** a complete local application. One Node process serves the API, serves the dashboard, polls the support mailbox every two minutes, sends queued mail, assigns tickets, sends staff notifications and overdue reminders, closes resolved tickets, stores attachments on disk and takes a nightly database backup. Staff sign in with real per-person credentials.
+**Current status:** a complete local application. One Node process serves the API, serves the dashboard, polls the support mailbox every two minutes, sends queued mail, assigns tickets, sends staff notifications and overdue reminders, closes resolved tickets, stores attachments on disk and takes a nightly backup of both the database and the attachment bytes. Staff sign in with real per-person credentials. CC'd colleagues join a ticket and are copied on replies, every change is audited, disabling an account revokes access and moves its work, and reply templates carry their own status mappings.
+
+Where each PRD requirement actually stands — proved on this stack, asserted by the suite, or inherited from the Cloudflare deployment — is in **`docs/requirements-review.md`**. Running it, watching it and recovering it are in **`docs/operations.md`**.
 
 It runs entirely on this machine. There is no cloud dependency of any kind.
 
@@ -63,7 +65,7 @@ For UI work, run `npm run dev` in `prototype/` as well and use `http://localhost
 
 ## Commands
 
-**Server** (`server/`):
+**Server** (`server/`) — the gate is 245 unit tests and 130 against real PostgreSQL:
 
 ```bash
 npm run dev           # watch mode
@@ -77,7 +79,7 @@ npm run db:seed       # staff1..staff5, staff1 as admin
 npm run db:import     # one-time cutover from a D1 export
 ```
 
-**Prototype** (`prototype/`):
+**Prototype** (`prototype/`) — 19 unit tests, a browser smoke run and a build:
 
 ```bash
 npm run verify        # typecheck + lint + format + unit + browser smoke + build
@@ -104,6 +106,7 @@ Both gates are the same standard: strict type-aware ESLint, zero warnings, no ex
 | `transitions.ts` | Which status changes need an email first (R28) | Yes |
 | `overdue.ts` | Response-deadline state (R03, R04) | Yes |
 | `assignment.ts` | Fewest open tickets, round robin for ties (R07) | Yes |
+| `domain.ts` | Also: CC eligibility and address-list splitting (R25) | Yes |
 | `password.ts` | scrypt hashing, plus the legacy PBKDF2 verifier | Yes |
 | `session.ts` | Cookie shape, token hashing, expiry | Yes |
 | `auth.ts` | Admin token comparison, fails closed | Yes |
@@ -119,6 +122,18 @@ Both gates are the same standard: strict type-aware ESLint, zero warnings, no ex
 
 `smtp.ts` holds parsing and transport together deliberately. They were two files on Cloudflare only because `cloudflare:sockets` could not be imported under vitest, which made anything sharing a file with it permanently untestable. `node:tls` has no such problem, and the split bought nothing but distance between a function and its test.
 
+## What the API exposes
+
+Beyond the obvious ticket routes:
+
+- `POST /api/tickets/:id/participants` — `{add: [...]}` or `{remove: "..."}` (R25)
+- `POST /api/tickets/:id/priority` — audited, changes no deadline (R11, R22)
+- `GET/POST /api/templates`, `POST|DELETE /api/templates/:id` — reading is open to all staff, writing is admin-only (R24)
+- `POST /api/outbox/:id/resend` — requeues a bounced, failed or ambiguous message and clears its acceptance, which re-anchors auto-close (R28)
+- `GET /api/audit` — the whole trail, newest first (R22)
+- `POST /api/staff` with `{name, enabled}` — account access, distinct from `{name, available}` (R24)
+- `POST /backup` — an off-schedule recovery point, behind the admin token
+
 ## Correctness properties worth not breaking
 
 - **`ingest_log.uid` and `outbox.message_id` are both UNIQUE.** They are what stop one email opening two tickets, and one ticket sending two acknowledgements.
@@ -130,7 +145,12 @@ Both gates are the same standard: strict type-aware ESLint, zero warnings, no ex
 - **`addNote` contains no outbox statement.** The constitution forbids an internal note reaching employee email, and the safest guarantee is that the sending machinery can never be handed one. `notification.ts` has the same shape: it cannot receive note text.
 - **The `Ticker`'s `#running` flag is the mutual exclusion the Durable Object gave by being single-threaded.** Two concurrent polls can claim the same outbox row.
 - **Notification Message-IDs carry a random component.** One reminder goes to the assignee and every admin in the same millisecond; a timestamp alone produced identical ids and the UNIQUE constraint silently dropped every recipient after the first.
-- **`author` comes from the session, never from the request body.** That is what makes the ticket history an audit trail rather than a record of what the client claimed.
+- **`author` comes from the session, never from the request body.** That is what makes the ticket history an audit trail rather than a record of what the client claimed. The same applies to every `actor` in `audit_events`.
+- **`findTicketByMessageIds` matching is not enough on its own: `isTicketParticipant` decides who may write.** Everybody in the company is on the approved domain, so a same-domain sender who learned a Message-ID would otherwise join any conversation, and IT would read it as the employee's own reply.
+- **`available` and `enabled` are ANDed in exactly one place, `assignable`.** A caller that forgot the second half would hand tickets to someone who no longer has an account, and nothing about the result would look wrong.
+- **A backup is two files.** The `pg_dump` and a `tar` of `STORAGE_DIR`, taken together and pruned together. Restoring the database alone gives an `attachments` table whose every row points at a file that is not there.
+- **Pruning never deletes the newest dump.** A machine switched off for two months would otherwise wake up, find everything past retention, and delete the only copy it has.
+- **An oversized-attachment notice has no `messages` row.** `first_response_at` is the earliest outbound message, so recording it would have an automatic size notice satisfy a four-hour response deadline. The acknowledgement is queued the same way for the same reason.
 
 ## Things that cost real debugging time
 
@@ -141,6 +161,9 @@ Both gates are the same standard: strict type-aware ESLint, zero warnings, no ex
 - PostgreSQL folds unquoted identifiers to lower case, so `AS openTickets` arrives as `opentickets`. Every camelCase alias in `store.ts` is double-quoted.
 - PostgreSQL types `count()` as bigint and `pg` returns bigint as a **string**. Every `COUNT` in `store.ts` is cast with `::int`.
 - Id columns are `GENERATED ALWAYS AS IDENTITY`, which refuses an explicit id. That is wanted everywhere except `db:import`, which uses `OVERRIDING SYSTEM VALUE` and then resets the sequences.
+- A **delivery report** quotes the original message in its `message/rfc822` part, which is not what `readBody` returns. `bouncedMessageIds` therefore takes the complete raw source, and skips the report's own header block — its Message-ID belongs to the report and can never be in the outbox.
+- A **comma inside a quoted display name** is not an address separator. `"Rao, Ananya" <...>` split on every comma becomes two entries, neither of which parses, and the colleague silently stops being copied.
+- **Routes that send need a message body; routes that do not, do not.** A shared guard once demanded one from the participants route, which answered 400 to every well-formed call.
 
 ## Mail
 
@@ -239,8 +262,10 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 9. `specs/001-email-ticketing/tasks.md` — implementation tasks
 10. `docs/superpowers/specs/2026-09-17-local-replatform-design.md` — the current stack and why
 11. `docs/stack-validation.md` — what has actually been tested, including everything Cloudflare cost
-12. `docs/brand.md` — palette, typography, contrast measurements
-13. `docs/ui-direction.md` — UI decisions and prototype instructions
+12. `docs/requirements-review.md` — every requirement against its evidence, and what is not met
+13. `docs/operations.md` — running it, watching it, recovering it, deploying and rolling back
+14. `docs/brand.md` — palette, typography, contrast measurements
+15. `docs/ui-direction.md` — UI decisions and prototype instructions
 
 ## Unresolved
 
@@ -248,7 +273,10 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 - **Production hosting is undecided**, by choice.
 - **Replies go out from the Gmail address**, not the company one. PRD open point 5.
 - **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.
-- **Bounce matching is unreliable**: `readBody` extracts the human-readable part of a delivery report rather than the quoted original, so `bouncedMessageIds` often has nothing to match on.
 - **Login leaks account existence by timing**, accepted and recorded — see `docs/stack-validation.md`.
-- CPU and memory cost of MIME parsing for 5 MB attachments is not measured.
-- What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity detection (open point 4).
+- What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity *detection* (open point 4 — the `ambiguous` state and the resend path exist; the detection rule does not).
+- **Backups sit on the same disk as the database.** That is not a backup against losing the disk. An off-machine copy waits on the hosting decision (PRD open point 9).
+- **Emailed verification codes and account recovery are not built** (R06), and a reopened ticket keeps an owner whose account may now be disabled (R10).
+- **Replies carry no per-staff signature** (R14), and response *episodes* after the first are not modelled (R16).
+- **Assignment is not serialised** against concurrent workload changes. The outbox claim is; assignment has no equivalent lock.
+- **The inherited stylesheets are desktop-first.** New CSS is mobile-first; `style.css` and `brand.css` are not, and inverting 1651 lines of append-only design iterations is a rewrite with regression risk and no behavioural gain. Screen-reader passes with an actual screen reader, and Firefox/WebKit runs, are also still open (T028).

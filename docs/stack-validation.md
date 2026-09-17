@@ -13,7 +13,21 @@ be wrong, because the wrongness is part of the record. For what is true today, r
 | Cloudflare | **Deleted.** Worker, D1 database and the `worker/` source are all gone |
 | Ingestion | **Proved on this stack** — empty database rebuilt the same tickets from the live mailbox |
 | Sending | **Not proved here.** `MAIL_SEND` has never been on; nothing has left this machine |
-| Tests | 219 unit + 59 integration (PostgreSQL) on the server, 19 + browser smoke on the prototype |
+| Tests | 245 unit + 130 integration (PostgreSQL) on the server, 19 + browser smoke on the prototype |
+
+**Measured on this stack, 17 September 2026** (all four run in the gate, so they cannot go
+stale silently):
+
+| | |
+| --- | --- |
+| scrypt, N=2¹⁶ r=8 p=2 | ~245 ms to hash, ~242 ms to verify, 64 MB peak |
+| A 5 MB attachment (the R12 maximum) | ~6 ms to store and index, ~2 ms to read back |
+| Backup and restore | dump plus attachment archive taken, database and files destroyed, both restored, restored database still accepts a new ticket |
+| Attachment memory | not measured, deliberately — a heap delta around a GC is noise, and the bound is structural: the download loop stops at the budget on bytes actually read, so peak is one buffer of at most 5 MB |
+
+These close what T004 asked for. The "free runtime limits" that task was written against were
+Cloudflare's — a 100,000-iteration PBKDF2 cap, a per-request CPU budget, and a frozen
+`Date.now()` that made any in-request timing read zero. All three died with Cloudflare.
 
 Everything below is the history that produced those conclusions, beginning 16 September 2026.
 

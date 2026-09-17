@@ -780,6 +780,32 @@ export async function setOwner(
   return true;
 }
 
+/**
+ * Set a ticket's priority (R11, R22).
+ *
+ * Audited like the other two things R22 names. Priority changes nothing about
+ * the deadline - R11 is explicit that every priority gets the same four working
+ * hours - so this is purely a signal to whoever is working the queue, which is
+ * exactly why it is worth recording who changed it.
+ */
+export const PRIORITIES = ["Low", "Normal", "High", "Urgent"] as const;
+export type Priority = (typeof PRIORITIES)[number];
+
+export async function setPriority(
+  db: Db,
+  id: number,
+  priority: Priority,
+  actor = "system",
+): Promise<boolean> {
+  const result = await db.query(
+    `UPDATE tickets SET priority = $1, updated_at = $2 WHERE id = $3 AND priority <> $1`,
+    [priority, new Date().toISOString(), id],
+  );
+  if ((result.rowCount ?? 0) === 0) return false;
+  await recordAudit(db, { ticketId: id, actor, action: "priority", detail: priority });
+  return true;
+}
+
 /** Apply a status that needs no email (R09). */
 export async function setStatus(
   db: Db,

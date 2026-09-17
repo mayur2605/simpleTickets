@@ -1,6 +1,6 @@
 # SimpleTickets agent instructions
 
-Read docs/engineering-standards.md, docs/PRD.md, docs/brand.md and the feature specification before modifying application behavior. Keep the approved burnt-orange visual identity. Ask one question at a time when a product decision is required.
+Read docs/engineering-standards.md, docs/PRD.md, docs/brand.md and the feature specification before modifying application behavior. For where each requirement actually stands — proved on this stack, asserted by the suite, or inherited — read `docs/requirements-review.md`; for running and recovering the system, `docs/operations.md`. Keep the approved burnt-orange visual identity. Ask one question at a time when a product decision is required.
 
 ## Architecture decision — 17 September 2026, read before implementing anything
 

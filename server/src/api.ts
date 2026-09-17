@@ -18,6 +18,9 @@ import {
   setAvailability,
   setEnabled,
   setStatus,
+  setPriority,
+  PRIORITIES,
+  type Priority,
   setOwner,
   openTicketsOwnedBy,
   lastAssignee,
@@ -356,7 +359,9 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
   }
 
   const ticketMatch =
-    /^\/api\/tickets\/(\d+)(\/reply|\/note|\/status|\/assign|\/participants)?$/.exec(url.pathname);
+    /^\/api\/tickets\/(\d+)(\/reply|\/note|\/status|\/assign|\/participants|\/priority)?$/.exec(
+      url.pathname,
+    );
   if (ticketMatch !== null) {
     const id = Number(ticketMatch[1]);
     const detail = await getTicket(env.pool, id);
@@ -386,7 +391,10 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       // Only the routes that actually SEND something need a message. Assigning
       // and editing the participant list do not, and demanding one made both
       // answer 400 to a perfectly well-formed request.
-      const needsMessage = ticketMatch[2] !== "/assign" && ticketMatch[2] !== "/participants";
+      const needsMessage =
+        ticketMatch[2] !== "/assign" &&
+        ticketMatch[2] !== "/participants" &&
+        ticketMatch[2] !== "/priority";
       if (needsMessage && (typeof body !== "string" || body.trim().length === 0)) {
         return Response.json({ error: "A body is required" }, { status: 400 });
       }
@@ -394,6 +402,20 @@ export async function handleApi(url: URL, request: Request, env: AppContext): Pr
       // NOT payload["author"]. Whoever is signed in is the author; a client
       // that says otherwise is ignored.
       const author = identity.name;
+
+      // R11/R22: priority is a signal to whoever works the queue - it changes
+      // no deadline - which is exactly why who changed it is worth recording.
+      if (ticketMatch[2] === "/priority") {
+        const requested = payload["priority"];
+        if (typeof requested !== "string" || !PRIORITIES.includes(requested as Priority)) {
+          return Response.json(
+            { error: `priority must be one of: ${PRIORITIES.join(", ")}` },
+            { status: 400 },
+          );
+        }
+        const changed = await setPriority(env.pool, id, requested as Priority, identity.name);
+        return Response.json({ ticket: id, priority: requested, changed });
+      }
 
       // R25: IT manages who is copied on a ticket. Additions and removals are
       // both explicit acts and both audited - an address dropping out of a Cc

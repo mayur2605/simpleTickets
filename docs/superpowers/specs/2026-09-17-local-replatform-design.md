@@ -178,3 +178,22 @@ queues and reports `held: true` without opening a socket. The SMTP module is por
 unit tested, and the Cloudflare build had real acknowledgements accepted with Gmail queue
 ids, but no message has left this machine. Turning it on means real employees receive mail
 and needs explicit authorization.
+
+---
+
+## Afterwards, the same day
+
+The port was deliberately a port: same behaviour, different runtime, so a new failure could
+be told from a new feature. With that proved, the requirements the Cloudflare build had
+never reached were built on top — CC participants, an audit trail, account access separate
+from availability, reply templates, backups that include the attachment bytes, and the
+dashboard for all of it.
+
+That work is recorded where it belongs rather than here: `specs/001-email-ticketing/tasks.md`
+task by task, and `docs/requirements-review.md` requirement by requirement. This document
+stays what it was, an account of the move itself, because rewriting it to describe a larger
+system would lose the one thing it is evidence of — that the same mail in produced the same
+tickets out, on a different runtime and a different database.
+
+The gate has since grown from 219 + 59 to 245 + 130. **Sending is still not proven**, for
+exactly the reason above.

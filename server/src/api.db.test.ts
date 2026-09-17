@@ -562,6 +562,51 @@ describe("what the ticket detail exposes", () => {
   });
 });
 
+describe("priority (R11, R22)", () => {
+  it("records who changed it, and changes no deadline", async () => {
+    const id = await ticket();
+    const before = (await getTicket(pool, id))?.ticket.response_due;
+
+    const result = await api(`/api/tickets/${String(id)}/priority`, {
+      as: await sessionFor("staff2"),
+      method: "POST",
+      body: { priority: "Urgent" },
+    });
+    expect(result.body["changed"]).toBe(true);
+
+    const detail = await getTicket(pool, id);
+    expect(detail?.ticket.priority).toBe("Urgent");
+    // R11: every priority gets the same four working hours.
+    expect(detail?.ticket.response_due).toBe(before);
+    const entry = detail?.audit.find((item) => item.action === "priority");
+    expect(entry?.actor).toBe("staff2");
+    expect(entry?.detail).toBe("Urgent");
+  });
+
+  it("refuses a priority that is not one of the four", async () => {
+    const id = await ticket();
+    const result = await api(`/api/tickets/${String(id)}/priority`, {
+      as: await sessionFor("staff1"),
+      method: "POST",
+      body: { priority: "Critical" },
+    });
+    expect(result.status).toBe(400);
+  });
+
+  // Setting it to what it already is is not a change, and an audit trail full
+  // of non-events is one nobody reads.
+  it("records nothing when the priority did not move", async () => {
+    const id = await ticket();
+    const staff = await sessionFor("staff1");
+    await api(`/api/tickets/${String(id)}/priority`, {
+      as: staff,
+      method: "POST",
+      body: { priority: "Normal" },
+    });
+    expect((await getTicket(pool, id))?.audit).toHaveLength(0);
+  });
+});
+
 describe("resending (R28)", () => {
   it("requeues a bounced message and refuses anything still pending", async () => {
     const id = await ticket();

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { randomUUID } from "node:crypto";
 import { hashPassword, verifyPassword, SCRYPT_N, SCRYPT_R, SCRYPT_P } from "./password.ts";
 
 describe("password hashing", () => {
@@ -81,5 +82,44 @@ describe("password hashing", () => {
     const stored = await hashPassword("pässwörd-日本語-🔐");
     expect(await verifyPassword("pässwörd-日本語-🔐", stored)).toBe(true);
     expect(await verifyPassword("pässwörd-日本語", stored)).toBe(false);
+  });
+});
+
+/**
+ * What the KDF costs on this runtime (T004).
+ *
+ * Previously unmeasurable rather than unmeasured: Cloudflare froze `Date.now()`
+ * during synchronous execution, so an in-request timing read zero, and the
+ * platform capped PBKDF2 at 100,000 iterations regardless. Both constraints
+ * died with Cloudflare.
+ *
+ * Logged, not asserted against a threshold. The trade-off these parameters
+ * encode is the thing worth writing down, and it is in the comment on
+ * SCRYPT_N: N=2^16, r=8, p=2 is the same total work as N=2^17, r=8, p=1 at half
+ * the peak memory, which is what makes it survivable on a small machine.
+ */
+describe("what hashing costs here", () => {
+  it("hashes and verifies in a time worth recording", async () => {
+    const sample = `fixture-${randomUUID()}`;
+
+    const hashStarted = performance.now();
+    const stored = await hashPassword(sample);
+    const hashMs = performance.now() - hashStarted;
+
+    const verifyStarted = performance.now();
+    const accepted = await verifyPassword(sample, stored);
+    const verifyMs = performance.now() - verifyStarted;
+
+    expect(accepted).toBe(true);
+    console.log(
+      JSON.stringify({
+        event: "kdf_measured",
+        scheme: stored.split("$")[0],
+        parameters: { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P },
+        peakMemoryMb: (128 * SCRYPT_N * SCRYPT_R) / (1024 * 1024),
+        hashMs: Math.round(hashMs),
+        verifyMs: Math.round(verifyMs),
+      }),
+    );
   });
 });

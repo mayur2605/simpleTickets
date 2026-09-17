@@ -314,6 +314,14 @@ export async function setStatus(
   });
 }
 
+/** R11, R22: a signal to whoever works the queue. It changes no deadline. */
+export async function setPriority(id: number, priority: string): Promise<void> {
+  await call(`/api/tickets/${String(id)}/priority`, {
+    method: "POST",
+    body: JSON.stringify({ priority }),
+  });
+}
+
 export async function assign(id: number, owner: string | null): Promise<void> {
   await call(`/api/tickets/${String(id)}/assign`, {
     method: "POST",
