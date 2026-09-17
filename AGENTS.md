@@ -2,54 +2,59 @@
 
 Read docs/engineering-standards.md, docs/PRD.md, docs/brand.md and the feature specification before modifying application behavior. Keep the approved burnt-orange visual identity. Ask one question at a time when a product decision is required.
 
-## Architecture decision — 17 September 2026, read before implementing ingestion
+## Architecture decision — 17 September 2026, read before implementing anything
 
-Mail transport is **Gmail IMAP polling with a Google App Password**, from a Cloudflare
-Worker on a two-minute cron. The mailbox is `simpleticketssupport@gmail.com`. Evidence
-and full measurement history: `docs/stack-validation.md`.
+The stack is **Node 24 + PostgreSQL 18 + the local filesystem**, in one process on this
+machine. There is no cloud dependency. Full reasoning and measured evidence:
+`docs/superpowers/specs/2026-09-17-local-replatform-design.md`.
 
-**This reverses the Resend decision recorded earlier the same day, and restores IMAP
-polling.** Three transports were tried and closed with evidence before this one:
+**This replaces Cloudflare Workers + D1 + R2.** That platform was chosen before anything
+was tested and is where most of this project's debugging time went — cron triggers that
+never fire on the account, a PBKDF2 cap of 100,000 iterations against guidance of 600,000,
+IMAP range fetches that stall, an absent `Buffer`, a `Date.now()` frozen during
+synchronous execution, and a database that could not be tested against at all. Each of
+those is now gone rather than worked around.
+
+Mail is unchanged and is the one thing that was hard-won. Four transports were tried and
+closed with evidence:
 
 | Transport | Outcome |
 | --- | --- |
-| Zimbra IMAP (`mail.allcheckservices.com`) | Closed. A Worker cannot reach it on 993, 465 or 587 — all time out, as does the bare IP, while `imap.gmail.com:993` connects from the same Worker in 68 ms and the development machine reaches the same host fine. The mail host drops Cloudflare's traffic. No code change alters this. |
-| Resend | Closed. Inbound worked end to end on the first attempt, but **outbound bounced**: `550 ... black list hostkarma.junkemailfilter.com`. The sending IP was clean on Spamhaus ZEN and SpamCop, so this is not ours to fix. A transport that cannot reply is not a ticketing transport. |
-| Gmail API | Closed. `gmail.readonly` is a restricted scope; Publish App is disabled on this project, and an unpublished app expires its refresh token every 7 days. |
-| **Gmail IMAP + App Password** | **Accepted.** Proved end to end: Workers reach Gmail, `imapflow` runs under `nodejs_compat`, an App Password authenticates without OAuth, and real emails have become tickets in D1. |
+| Zimbra IMAP (`mail.allcheckservices.com`) | Closed from Cloudflare — the mail host dropped that traffic on every port. Not retested from this machine; it may now work, and if it does it removes the Gmail hop entirely. |
+| Resend | Closed. Inbound worked; **outbound bounced** on `hostkarma.junkemailfilter.com`, with the sending IP clean on Spamhaus ZEN and SpamCop. Not ours to fix. |
+| Gmail API | Closed. `gmail.readonly` is a restricted scope, Publish App is disabled on the project, and an unpublished app expires its refresh token every 7 days. |
+| **Gmail IMAP + SMTP with an App Password** | **Accepted.** Real employee email became real tickets, real acknowledgements were accepted with Gmail queue ids, and a reply threaded onto its original ticket. |
 
-So `specs/001-email-ticketing/plan.md` and T010 are **no longer superseded** — two-minute
-polling, the UIDVALIDITY/UID checkpoint and the UID launch cutoff are the design again,
-and are partly implemented in `worker/`. R01 keeps `support@allcheckservices.com` as the
-published address only if Zimbra forwards to the Gmail mailbox; that forwarding is an
-open product decision and is **not** configured.
+Inbound reaches the mailbox because `support@allcheckservices.com` has a Zimbra user-level
+forward to `simpleticketssupport@gmail.com` — no DNS change and no mail admin. SPF passes
+because the forwarder is the domain's own MX and the record has `+mx`.
 
-What is built and proved in `worker/`:
+**`MAIL_SEND` is off unless it is exactly `on`.** Intents are enqueued, claimed and
+rendered; nothing reaches the wire. Off is the default because the usual reason to run
+this locally is to develop against the real mailbox, and a duplicate acknowledgement lands
+in a real employee's inbox.
 
-1. `scheduled()` on `crons = ["*/2 * * * *"]` calls `ingest()`.
-2. `readNewMail()` fetches UIDs above the checkpoint; `ingest_log.uid` is the primary key,
-   so a retried or overlapping run inserts nothing the second time and one email can never
-   open two tickets.
-3. First run adopts `uidNext - 1` and imports nothing, which is R27's launch cutoff in one
-   integer.
-4. `createTicket()` writes ticket, message and log in one D1 batch so they commit together.
+Ingestion opens IMAP **read-only** at every call site, so polling the real mailbox
+disturbs nothing and no flag is written. The database is the record of what has been
+processed, never the mailbox.
 
 Known IMAP behaviours that cost real debugging time, recorded so they are not rediscovered:
 
 - A `N:*` range **always returns the newest message** even when nothing is new. Idempotency
   is what makes this safe, not the range.
-- Fetching a **UID range** stalls; fetching a **single UID** does not. Poll one UID at a time.
-- `bodyParts` returns the raw transfer encoding. Use `download()` instead, or decode by hand.
+- `bodyParts` returns the raw transfer encoding. Use `download()`, which decodes.
 - A **single-part** message has no part identifier, so `download()` with one returns the
   entire raw message including headers. Address `"TEXT"`.
-- Gmail-composed mail is frequently **HTML-only**; `htmlToText()` in `worker/src/domain.ts`
+- `References` is not in the envelope, must be requested, and arrives folded across
+  indented lines. Dropping continuations loses half the thread.
+- Gmail-composed mail is frequently **HTML-only**; `htmlToText()` in `server/src/domain.ts`
   exists because of this.
 
-Still unproved on this stack: **sending has never been tested** from any transport,
-delivery-failure visibility for R15 has no mechanism yet, and Workers WebCrypto refuses
-PBKDF2 above 100,000 iterations, which blocks R06 until Argon2id/bcrypt via WebAssembly is
-chosen or the cap is explicitly accepted. The cron trigger's reliability is under active
-measurement — see "Cron trigger" in `docs/stack-validation.md`.
+**Still unproven on this stack:** ingestion end to end. The pipeline is ported and covered
+by tests, and the local database holds byte-identical content to the deployed system's,
+but the acceptance test — empty database, pointed at the real mailbox, independently
+rebuilding the same tickets — needs `GMAIL_APP_PASSWORD` in `server/.env`. Cloudflare
+secrets are write-only and cannot be read back.
 
 ## Required engineering workflow
 
@@ -62,11 +67,22 @@ measurement — see "Cron trigger" in `docs/stack-validation.md`.
 
 ## Required verification
 
-From prototype/: `npm ci`, then `npm run verify`. Browser tests start their own Vite server on 5174; local Google Chrome is required. CI uses Playwright Chromium. Do not use real credentials or real email in tests.
+Two packages, two gates, both must pass before a commit.
 
-Vitest runs the domain suites (`npm run test:unit`) and is part of `npm run verify`, so CI enforces it too. Domain rules live in `prototype/src/domain/` and must stay free of React, storage and transport. Extend tooling to each new backend package before marking it ready.
+From `server/`: `npm ci`, then `npm run verify` — typecheck, lint, format check, unit
+tests and the integration tests against `simpletickets_test`. The database tests need a
+running PostgreSQL 18 and refuse any database whose name does not end in `_test`, because
+they truncate.
 
-Current gates cover prototype source/config/test scripts, not every root diagnostic script. Treat passing UI checks as prototype validation, never proof of server authorization or email reliability.
+From `prototype/`: `npm ci`, then `npm run verify`. Browser tests start their own Vite
+server on 5174; local Google Chrome is required. CI uses Playwright Chromium.
+
+Domain rules live in `prototype/src/domain/` and must stay free of React, storage and
+transport; the server imports the business calendar from there rather than copying it, so
+the deadline the UI shows is the deadline the system enforces.
+
+Do not use real credentials or real email in tests. Treat passing UI checks as prototype
+validation, never proof of server authorization or email reliability.
 
 ## Git
 
@@ -76,4 +92,14 @@ Hooks live in `.githooks/`; enable them once per clone with `git config core.hoo
 
 ## Boundaries
 
-Never log or commit credentials. Do not send email, alter DNS/MX or production mail settings, buy hosting or deploy production without the required user authorization. Cloudflare remains provisional. Keep legitimate existing files and user changes intact.
+Never log or commit credentials. Do not send email, alter DNS/MX or production mail settings, buy hosting or deploy anything without explicit user authorization naming sender and recipients.
+
+`MAIL_SEND=on` is exactly that kind of action: it turns a local development run into
+something that emails real employees. Leave it off unless the user has said otherwise for
+that session.
+
+`server/var/` holds archived employee mail and attachments. It is git-ignored; never
+commit it, never paste its contents into a document, and never format it.
+
+Production hosting is deliberately undecided. Do not introduce a hosting or cloud
+dependency without asking. Keep legitimate existing files and user changes intact.

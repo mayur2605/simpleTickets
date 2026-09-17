@@ -39,18 +39,26 @@ An internal employee can request IT help by email, track the conversation throug
 | R27 | Create tickets only from emails received from launch onward. Do not import pre-launch mailbox emails, whether read or unread. Leave existing mailbox contents intact. |
 | R28 | A status change that requires an email takes effect only when the outgoing mail server accepts that message. A requested Waiting for Employee or Resolved transition leaves the ticket's status, response deadline and reminders exactly as they were until acceptance; on acceptance the status changes, and for a resolution the R19 auto-close clock starts at the acceptance time. Manual and automatic closure both leave the ticket Resolved until the closure email is accepted. A bounce or delivery failure reported after acceptance alerts the assignee and admin and pauses automatic closure until delivery is fixed. A message that is never accepted leaves the ticket in its previous status with the failure visible to IT. A draft, internal note or automatic acknowledgement never satisfies a transition or a response deadline. |
 
-## Approved 16 September 2026 — not implemented
+## Approved 16 September 2026 — implemented 17 September 2026
 
-The user approved these eight decisions. They are recorded in the requirements above and in the specification, plan and tasks; no code implements any of them.
+The user approved these eight decisions. All eight are now built in `server/` and covered
+by tests. What each one still lacks is noted, because "implemented" is not "proved against
+real mail".
 
-1. IT staff work exclusively through the dashboard; employees use email (R04, R14).
-2. IT receives assignment, employee-reply and overdue email notifications, each linking to the dashboard (R15, R18).
-3. A Waiting for Employee or Resolved transition takes effect only after SMTP acceptance of the required public reply; until then status and response deadlines are preserved (R09, R15, R28).
-4. The 72-hour auto-close timer starts when the resolution email is accepted (R19, R28).
-5. IT may close a Resolved ticket manually; automatic closure also remains (R19).
-6. Both closure routes leave the ticket Resolved until the closure email is accepted (R19, R28).
-7. A resolution-email bounce reported after acceptance alerts the assignee and admin and pauses automatic closure until delivery is fixed (R28).
-8. Disabling a staff account redistributes open tickets by the existing assignment rules; Resolved and Closed tickets retain their historical owner (R05, R08).
+| # | Decision | Where it lives | Covered by |
+| --- | --- | --- | --- |
+| 1 | IT works only in the dashboard; employees use email (R04, R14) | `api.ts` requires a session for every write; there is no inbound path from a staff address to a ticket | `notification.db.test.ts` |
+| 2 | Assignment, employee-reply and overdue notifications, each linking to the dashboard (R15, R18) | `notification.ts`, `pipeline.notifyAssignee`, `pipeline.sendReminders` | `notification.test.ts`, `notification.db.test.ts` |
+| 3 | Waiting/Resolved take effect only on SMTP acceptance (R09, R15, R28) | `transitions.ts` classifies; `store.recordAcceptance` applies the status and the acceptance in one transaction | `store.db.test.ts` |
+| 4 | The 72-hour clock starts at acceptance (R19, R28) | `store.ticketsReadyToClose` joins on `outbox.accepted_at` | `autoclose.db.test.ts` |
+| 5 | Manual closure as well as automatic (R19) | `POST /api/tickets/:id/status` with `Closed`; `pipeline.autoClose` | `autoclose.db.test.ts` |
+| 6 | Both closure routes leave the ticket Resolved until accepted (R19, R28) | both queue a `closure` intent with `pendingStatus` — the same machinery, deliberately | `autoclose.db.test.ts` |
+| 7 | A bounce after acceptance alerts and pauses auto-close (R28) | `delivery_failed` notification; `ticketsReadyToClose` excludes a bounced resolution | `autoclose.db.test.ts` |
+| 8 | Redistribution on disabling/unavailability (R05, R08) | `api.redistribute`, re-reading workloads after each move | `store.db.test.ts` |
+
+**Not yet proved end to end:** none of this has run against live mail on the current
+stack. The mail loop needs `GMAIL_APP_PASSWORD`, and `MAIL_SEND` is off by default, so no
+notification has actually been delivered to a person.
 
 ## Proposed implementation defaults — not additional user decisions
 
@@ -62,8 +70,21 @@ The user approved these eight decisions. They are recorded in the requirements a
 
 ## Open points
 
-1. Confirm the backup storage provider, restore-time feasibility, and capacity/cost growth beyond free allowances. Daily backups and 30-day recovery-point retention are decided.
-2. ~~Verify trusted sender authentication, delivery and Cloudflare-origin compatibility.~~ **Resolved for receiving, 17 September 2026.** Cloudflare-origin Zimbra access is impossible and the transport moved to Gmail IMAP; real emails now become tickets. **Still open for sending:** no transport has ever successfully sent a reply, so R02's acknowledgement, R13's replies and R15's failure visibility are all unproved. See stack-validation.md.
+1. ~~Confirm the backup storage provider, restore-time feasibility, and capacity growth.~~
+   **Resolved 17 September 2026.** Backups are `pg_dump --format=custom` to `BACKUP_DIR`
+   at 02:00 IST with 30-day retention, which the local disk holds comfortably at this
+   scale. Restore is a tested path, not a runbook paragraph: `backup.db.test.ts` takes a
+   real dump, empties the database, restores it and checks the rows came back — including
+   that the restored database can still accept new tickets, which is where identity
+   sequences usually break. **Still open:** the backups are on the same disk as the
+   database, which is not a backup against disk loss. An off-machine copy is needed before
+   this is relied on, and that decision waits on where this runs in production.
+2. ~~Verify trusted sender authentication, delivery and origin compatibility.~~
+   **Resolved 17 September 2026.** Real employee email became real tickets and real
+   acknowledgements were accepted with Gmail queue ids. The Cloudflare-origin constraint
+   that forced Gmail is gone with Cloudflare — Zimbra IMAP may well be reachable from this
+   machine, which would remove the Gmail hop and open point 5 with it. Untested; worth an
+   hour. See stack-validation.md.
 
 3. Decide what an employee reply does to a Waiting, Resolved or closure transition whose required email has not yet been accepted: cancel the pending transition and leave the ticket open, or apply it on acceptance and let the reply reopen the ticket immediately. The approved rule in R28 covers the waiting period itself, not this collision.
 
@@ -79,26 +100,29 @@ The user approved these eight decisions. They are recorded in the requirements a
    address they already know. **Outbound identity is still open:** replies leave as the
    Gmail address, which needs Gmail "send as" or Workspace on the domain.
 
-6. ~~**Choose a sending transport.**~~ **Resolved 17 September 2026: Gmail SMTP.** A
-   Worker authenticated to `smtp.gmail.com:465` with the App Password already used for
-   ingestion (`235`, 1416 ms). Zimbra SMTP stays unreachable and Resend stays blacklisted;
-   this needs neither. **Authentication is not delivery** — no mail has been sent and no
-   outbound module exists, so R02's acknowledgement, R13's replies and R28's delivery
-   gating remain unbuilt. The From address is still open point 5: replies would come from
-   the Gmail address unless Gmail is configured to send as the company address.
+6. ~~**Choose a sending transport.**~~ **Resolved 17 September 2026: Gmail SMTP**, port
+   465 with the App Password already used for ingestion. The outbound module, the durable
+   outbox, retry/backoff, permanence classification and R28 delivery gating are all built
+   and tested. The From address remains open point 5.
 
 7. **Decide the DMARC policy.** Open. What the domain publishes today is deliberately not
    recorded here - see the note in `docs/stack-validation.md` for why a public repository
    is the wrong place for it.
 
-8. ~~**Staff password hashing on Workers.**~~ **Resolved 17 September 2026.** The
-   100,000-iteration cap is per `deriveBits` call, not on total work; six chained rounds
-   reach the 600,000 figure guidance asks for, measured at ~124 ms of CPU per login on the
-   deployed worker. PBKDF2 is still not memory-hard, and the stored format records its own
-   parameters so a memory-hard KDF can replace it without invalidating existing passwords.
-   One accepted trade-off is recorded in `docs/stack-validation.md`: login returns early
-   for unknown accounts, which leaks account existence by timing, because evening the
-   timing would let anonymous callers burn ~124 ms of CPU per request.
+8. ~~**Staff password hashing.**~~ **Resolved 17 September 2026, and then improved.** The
+   Workers workaround — six chained PBKDF2 rounds to reach 600,000 iterations past a
+   100,000-per-call cap — is no longer needed. Node has scrypt, which is **memory-hard**,
+   the property PBKDF2 lacks at any iteration count. Parameters are N=2¹⁶, r=8, p=2: 64 MB
+   per guess, measured at 252 ms per hash. The old verifier is retained so a password set
+   under the previous scheme still works, with a test pinning a real legacy hash.
+
+   One accepted trade-off stands, unchanged by the platform move and recorded in
+   `docs/stack-validation.md`: login returns early for unknown accounts, which leaks
+   account existence by timing, because evening the timing would let any anonymous caller
+   burn a full KDF per request. Revisit if account names ever stop being `staff1`–`staff5`.
+
+9. **Decide where backups go off this machine.** See open point 1. Blocked on the
+   production hosting decision, which is deliberately still open.
 
 ## Success and release criteria
 

@@ -6,42 +6,223 @@ Read `AGENTS.md` and `docs/engineering-standards.md` first — they are the bind
 
 ## Project overview
 
-SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it. Current status: an interactive frontend prototype with an enforced quality gate, plus a **deployed, running backend** that ingests real employee email, opens tickets, acknowledges them and threads replies — proved end to end on real mail on 17 September 2026. The two halves are not connected: the prototype is still in-memory and reads none of this. No assignment, no IT replies, no authentication.
+SimpleTickets is an email-based internal IT ticketing system for a 100-person organization with 5 IT staff. Employees submit requests via email to `support@allcheckservices.com`; IT works only in the dashboard and receives one-way notification emails that link back to it.
 
-## Architecture
+**Current status:** a complete local application. One Node process serves the API, serves the dashboard, polls the support mailbox every two minutes, sends queued mail, assigns tickets, sends staff notifications and overdue reminders, closes resolved tickets, stores attachments on disk and takes a nightly database backup. Staff sign in with real per-person credentials.
 
-**Current state:**
-- `prototype/`: React 19 + TypeScript + Vite frontend with Fluent UI React v9 components
-- `prototype/src/domain/`: production domain rules, free of React, storage and transport — start here for business logic, not in `main.tsx`
-- Single-file prototype (`src/main.tsx`) with in-memory state for UI review
-- `worker/`: **deployed** Cloudflare Worker that polls Gmail over IMAP and opens tickets in D1. Real emails have become real tickets. No dashboard reads it yet — the prototype is still in-memory and unconnected.
-- `scripts/check-mail-tls.mjs`: unauthenticated Zimbra TLS probe
-- `tools/mail-check/`: interactive IMAP/SMTP authentication check, run by hand, its own package
-- `.github/workflows/prototype-quality.yml`: runs `npm run verify` on push/PR — first remote run green 16 Sep 2026
-- `.github/workflows/worker-quality.yml`: runs the worker gate on push/PR. Deploys are owned by Cloudflare Workers Builds, not by Actions
-- Still missing: authentication, the dashboard-to-database connection, and any outgoing mail
+It runs entirely on this machine. There is no cloud dependency of any kind.
 
-**Production stack, as actually built:**
-- Cloudflare Workers for the API and the two-minute ingestion cron
-- D1 (`simpletickets`) for tickets, messages and the ingestion checkpoint — live
-- Gmail IMAP (`simpleticketssupport@gmail.com`) for receiving, via App Password
-- R2 for attachments and backups — not started
-- Sending mail — **no transport chosen**; every candidate so far failed on outbound
+## Architecture decision — 17 September 2026 (supersedes every earlier one)
 
-## Architecture decision — 17 September 2026
+The stack is **Node 24 + PostgreSQL 18 + the local filesystem**, in one process.
 
-Mail transport is **Gmail IMAP polling with a Google App Password**, on **Cloudflare
-Workers**. This **reverses** the Resend decision taken earlier the same day: Resend's
-inbound worked, but its outbound bounced on a HostKarma blacklisting we do not control.
-Zimbra IMAP stays closed — a Worker cannot reach `mail.allcheckservices.com` on any port.
+This replaces Cloudflare Workers + D1 + R2, which was chosen before anything was tested and cost this project most of its debugging time: cron triggers that never fire on that account, a PBKDF2 cap of 100,000 iterations, IMAP range fetches that stall, an absent `Buffer`, a frozen `Date.now()`, and a database that could not be tested against. Every one of those problems is gone rather than worked around.
 
-So `specs/001-email-ticketing/plan.md` and T010 are **current again**, not superseded:
-two-minute polling with a UIDVALIDITY/UID checkpoint is the design, and `worker/`
-implements it. Read the "Architecture decision" section of `AGENTS.md` and
-`docs/stack-validation.md` before touching ingestion.
+The full reasoning, the ported-versus-rewritten decision and the measured evidence are in **`docs/superpowers/specs/2026-09-17-local-replatform-design.md`**. Read it before changing the stack.
 
-**Sending is still unsolved.** No transport has ever successfully sent a reply. Do not
-write code that assumes one exists.
+**Production hosting is deliberately undecided.** A plain Node application deploys to an office server, a VM or a PaaS unchanged, so nothing is lost by deferring it. Do not add a hosting dependency without asking.
+
+## Layout
+
+- `server/` — the backend. Node, PostgreSQL, one process, its own gate.
+- `prototype/` — React 19 + TypeScript + Vite dashboard with Fluent UI v9. Built output is served by `server/`.
+- `prototype/src/domain/` — production domain rules, free of React, storage and transport. Business logic starts here, not in `main.tsx`. The server imports the business calendar from here on purpose: two implementations of the deadline rules would drift, and the UI would eventually show a different deadline from the one the system enforces.
+- `scripts/check-mail-tls.mjs` — unauthenticated Zimbra TLS probe.
+- `tools/mail-check/` — interactive IMAP/SMTP authentication check, run by hand, its own package.
+- `.github/workflows/` — quality gates. Nothing deploys.
+
+## Running it
+
+Once, to set up:
+
+```bash
+brew install postgresql@18 && brew services start postgresql@18
+createdb simpletickets && createdb simpletickets_test
+```
+
+Then:
+
+```bash
+cd server && npm ci && cp env.example .env
+```
+
+Put the Gmail App Password in `server/.env`. Without it the server still runs — the API and dashboard work against whatever is already in the database — but the mail loop does not start, and says so.
+
+```bash
+cd server && npm run db:migrate && npm run db:seed
+npm run db:seed -- --password staff1    # prompts; never pass a password as an argument
+cd ../prototype && npm ci && npm run build
+cd ../server && npm run dev
+```
+
+The dashboard is then at `http://localhost:8787`, serving the built bundle from the same origin as the API.
+
+For UI work, run `npm run dev` in `prototype/` as well and use `http://localhost:5173`. Vite proxies `/api` to 8787, so the session cookie behaves exactly as it does in production.
+
+## Commands
+
+**Server** (`server/`):
+
+```bash
+npm run dev           # watch mode
+npm start             # plain
+npm run verify        # the gate: typecheck + lint + format:check + unit + database tests
+npm run test:unit     # vitest, pure logic only
+npm run test:db       # vitest against simpletickets_test
+npm run db:migrate    # apply pending migrations
+npm run db:reset      # drop everything and re-migrate (refuses a non-local URL)
+npm run db:seed       # staff1..staff5, staff1 as admin
+npm run db:import     # one-time cutover from a D1 export
+```
+
+**Prototype** (`prototype/`):
+
+```bash
+npm run verify        # typecheck + lint + format + unit + browser smoke + build
+npm run dev           # http://127.0.0.1:5173
+npm test              # browser smoke test only
+```
+
+Both gates are the same standard: strict type-aware ESLint, zero warnings, no explicit `any`, no non-null assertions, Prettier-enforced. `npm run format` after editing — an unformatted file fails at `format:check`, before the tests run.
+
+## The server
+
+| Module | Responsibility | Pure? |
+| --- | --- | --- |
+| `domain.ts` | Sender authorisation, address extraction, HTML to text | Yes |
+| `mime.ts` | RFC 5322 building, header-injection refusal, dot-stuffing, stored-row validation | Yes |
+| `smtp.ts` | Reply parsing **and** the Gmail dialogue over `node:tls` | Partly |
+| `acknowledgement.ts` | R02 acknowledgement composition | Yes |
+| `reply.ts` | R13 public reply composition | Yes |
+| `notification.ts` | R15/R18 one-way staff notifications | Yes |
+| `outbox.ts` | Retry, backoff, permanence, abandonment, ambiguity | Yes |
+| `threading.ts` | Reply → existing ticket, by Message-ID | Yes |
+| `autoreply.ts` | RFC 3834 and legacy auto-reply detection | Yes |
+| `bounce.ts` | Delivery-failure detection and id extraction | Yes |
+| `transitions.ts` | Which status changes need an email first (R28) | Yes |
+| `overdue.ts` | Response-deadline state (R03, R04) | Yes |
+| `assignment.ts` | Fewest open tickets, round robin for ties (R07) | Yes |
+| `password.ts` | scrypt hashing, plus the legacy PBKDF2 verifier | Yes |
+| `session.ts` | Cookie shape, token hashing, expiry | Yes |
+| `auth.ts` | Admin token comparison, fails closed | Yes |
+| `health.ts` | Whether the mail loop has stalled | Yes |
+| `storage.ts` | Local files: raw messages, attachments, path safety | No — disk |
+| `backup.ts` | `pg_dump` schedule, retention, restore | No — disk |
+| `imap.ts` | Mailbox reading, body-part selection, attachments | No — network |
+| `store.ts` | All database access | No — database |
+| `ticker.ts` | The two-minute loop | No — timers |
+| `pipeline.ts` | Ingest, reminders, auto-close, flush | No |
+| `api.ts` | The dashboard API | No |
+| `main.ts` | HTTP server, routes, static dashboard, wiring | No |
+
+`smtp.ts` holds parsing and transport together deliberately. They were two files on Cloudflare only because `cloudflare:sockets` could not be imported under vitest, which made anything sharing a file with it permanently untestable. `node:tls` has no such problem, and the split bought nothing but distance between a function and its test.
+
+## Correctness properties worth not breaking
+
+- **`ingest_log.uid` and `outbox.message_id` are both UNIQUE.** They are what stop one email opening two tickets, and one ticket sending two acknowledgements.
+- **The acknowledgement is enqueued in the same transaction as the ingest log entry.** Queue it afterwards and a crash in between leaves a ticket nothing will ever acknowledge.
+- **`claimNextIntent` uses `FOR UPDATE SKIP LOCKED`.** It replaced a compare-and-swap that was correct only because there was exactly one poller.
+- **A send whose outcome is unknown becomes `ambiguous` and waits for a human.** Resending risks a duplicate to a real person; dropping it risks silence (PRD open point 4).
+- **Bounces are classified before auto-replies.** A bounce has a null return path, so the auto-reply test matches it too, and misfiling one loses a delivery failure R15 needs.
+- **`findTicketByMessageIds` refuses to thread on a notification's Message-ID.** IT staff are on the approved sender domain, so a staff member replying to a one-way notification produces a message indistinguishable from the employee's. Without this it would be appended to the ticket, restarting the response clock and reopening a resolved ticket — which R15 forbids.
+- **`addNote` contains no outbox statement.** The constitution forbids an internal note reaching employee email, and the safest guarantee is that the sending machinery can never be handed one. `notification.ts` has the same shape: it cannot receive note text.
+- **The `Ticker`'s `#running` flag is the mutual exclusion the Durable Object gave by being single-threaded.** Two concurrent polls can claim the same outbox row.
+- **Notification Message-IDs carry a random component.** One reminder goes to the assignee and every admin in the same millisecond; a timestamp alone produced identical ids and the UNIQUE constraint silently dropped every recipient after the first.
+- **`author` comes from the session, never from the request body.** That is what makes the ticket history an audit trail rather than a record of what the client claimed.
+
+## Things that cost real debugging time
+
+- A **single-part** message has no part identifier. Address `"TEXT"`, or `download()` returns the entire raw message including headers.
+- `bodyParts` returns raw transfer encoding; `download()` decodes.
+- `References` is **not** in the IMAP envelope and must be requested, and it arrives folded across indented lines — dropping continuations loses half the thread.
+- IMAP is opened **read-only** at every call site. Ingestion must not mark anything seen; the database is the record of what has been processed, not the mailbox's flags. This is also what lets a local instance poll the same mailbox as another running system without disturbing it.
+- PostgreSQL folds unquoted identifiers to lower case, so `AS openTickets` arrives as `opentickets`. Every camelCase alias in `store.ts` is double-quoted.
+- PostgreSQL types `count()` as bigint and `pg` returns bigint as a **string**. Every `COUNT` in `store.ts` is cast with `::int`.
+- Id columns are `GENERATED ALWAYS AS IDENTITY`, which refuses an explicit id. That is wanted everywhere except `db:import`, which uses `OVERRIDING SYSTEM VALUE` and then resets the sequences.
+
+## Mail
+
+- Inbound: `support@allcheckservices.com` forwards to `simpleticketssupport@gmail.com` (a Zimbra user-level forward; no DNS change, no mail admin). SPF passes because the forwarder is the domain's MX and the record has `+mx`.
+- Outbound: Gmail SMTP on port 465 with the same App Password.
+- **`MAIL_SEND` is off unless it is exactly `on`.** Intents are still enqueued, claimed and rendered — everything except the wire. It is off by default because the usual reason to run this locally is to develop against the real mailbox, and a second acknowledgement for a ticket another system already answered lands in a real employee's inbox.
+- Replies still go out from the Gmail address. An employee who writes to the company address is answered by a `gmail.com` one. Needs Gmail "send as" or Workspace on the domain. PRD open point 5.
+
+## Key constraints
+
+- **Email domain:** only `@allcheckservices.com` senders to `support@allcheckservices.com`
+- **Work calendar:** Mon–Sat, 09:00–18:00 Asia/Kolkata (UTC+5:30)
+- **Response deadline:** 4 working hours; Sunday messages due Monday 12:00
+- **Assignment:** fewest open tickets among available staff; round robin for ties
+- **Statuses:** New, In Progress, Waiting for Employee, Resolved, Closed
+- **Delivery-gated transitions (R28):** Waiting for Employee, Resolved and Closed take effect only when the mail server accepts the required message. The 72-hour auto-close clock starts at that acceptance, and a later bounce pauses it.
+- **Attachments:** 5 MB total per email, on local disk under `STORAGE_DIR`
+- **Backups:** `pg_dump` daily at 02:00 IST, 30-day retention, under `BACKUP_DIR`
+- **Staff availability:** admin-only; unavailable staff have tickets redistributed and the new owners are notified
+
+## Authentication
+
+Staff sign in with a name and password (R06). Sessions are HttpOnly, Secure, SameSite=Strict cookies whose tokens are stored hashed. Passwords are scrypt (N=2¹⁶, r=8, p=2), and the stored format records its own parameters so the cost can be raised later without invalidating anyone's password. The Cloudflare-era chained-PBKDF2 verifier is retained so an older password still works.
+
+**Bootstrapping the first password is deliberately a command-line action.** Only an admin session may provision a password, and a fresh database has no account with one, so the API has no way to create the first — which is the safe direction. `npm run db:seed -- --password staff1` fills the gap from the machine, where whoever runs it already has the database.
+
+The shared `ADMIN_TOKEN` guards the operational routes (`/status`, `/ticker`, `/poll`, `/flush`, `/peek`, `/diag`) and **carries no identity on purpose**: a token cannot author a message, because then anyone holding it could write history under any staff member's name.
+
+## Connecting the dashboard
+
+Nothing to configure. The server serves the built dashboard, so `/api` is same-origin, the session cookie works, and there is no CORS and no token in the browser bundle.
+
+The dashboard still shows built-in **sample data** when no server answers — it asks `/api/me` and falls back if nothing sensible comes back. That fallback is load-bearing: the browser smoke test drives the UI by its labels and asserts exact row counts against the `seed` array, and a design review has to work without a backend. A configured API that *fails* shows an error and no tickets, never sample data: invented tickets displayed when the real ones could not be loaded would have IT working a queue that does not exist. The banner always states which mode is active.
+
+## The smoke test
+
+`prototype/checks/smoke.mjs` is a single linear Playwright script, not a test runner. It starts **its own Vite server on port 5174** (`strictPort`), so two concurrent runs collide.
+
+- It asserts **exact row and item counts** against the `seed` and `initialTemplates` arrays in `main.tsx`. Changing that sample data breaks the test — update both together.
+- It sets `VITE_PROXY_TARGET` to a dead port so the dashboard cannot find a backend and stays on sample data. Without that the test would pass or fail depending on whether a real server happened to be running on 8787.
+- It **overwrites** `dashboard-preview.png`, `ticket-preview.png` and `mobile-preview.png`. Those are outputs of a smoke run, not hand-made assets.
+- Locally it launches `channel:"chrome"`; under `CI=true` it uses Playwright's bundled Chromium.
+
+## Prototype conventions
+
+`src/main.tsx` is one Prettier-formatted file. It was originally written in a minified single-line style; that is gone. **Do not re-minify it.**
+
+- No router. Navigation is a `page` string in `useState`; all views are conditional expressions in one `App` return.
+- All state is a `useState` cluster at the top of `App`. Sample data (`seed`, `initialTemplates`, `statuses`, `staff`) sits above it as module constants.
+- The composer keeps `replyDraft` and `noteDraft` separate, with `draft`/`setDraft` selected by the `note` flag. Keep them separate: a shared draft lets an internal note land in the public reply box, which R13 and Constitution III forbid.
+- Fluent brand tokens are overridden inline in the `FluentProvider` theme object (burnt orange `#B54720`), separately from the CSS files.
+- CSS is **append-only override layers**: `style.css` holds successive design iterations and `brand.css` is imported after it so its tokens win. To change the palette, edit `brand.css` and the `FluentProvider` theme — not the older blocks in `style.css`.
+- The prototype CSS is still desktop-first. New work is mobile-first from 360 px per `docs/engineering-standards.md`; migrating the existing sheets is T028, not a side effect of an unrelated change.
+
+## Dependencies
+
+Everything is at its latest version with **one deliberate exception**: TypeScript is pinned to 6.0.3 rather than 7.0.2, because `typescript-eslint` declares `typescript <6.1.0`. Taking 7 would silently disable the type-aware lint rules that are the gate. Revisit when typescript-eslint supports 7.
+
+The server needs no bundler and no `tsx`: Node 24 runs TypeScript directly by stripping types, which is why `tsconfig.json` sets `erasableSyntaxOnly` and every relative import carries an explicit `.ts` extension. `node --env-file-if-exists=.env` reads the environment file natively, so there is no `dotenv` dependency and no import-order trap.
+
+## Git
+
+`docs/git-workflow.md` is binding. The two rules that override Claude Code defaults:
+
+- **Never add AI attribution to a commit message.** No `Co-Authored-By:` naming a model or assistant, no "Generated with", no tool name, no robot emoji. The author is `mayur2605` and nothing else. This applies to pull request descriptions too.
+- **`npm run verify` must exit 0 before you commit** — in both packages. Never reach green by weakening a rule.
+
+Also: check `.gitignore` and `git status --short` before staging, never commit a credential, and push only when asked. `server/var/` holds real employee mail and attachments and is git-ignored.
+
+Hooks in `.githooks/` enforce part of this — enable them once per clone with `git config core.hooksPath .githooks`. They are a safety net, not the gate. Never use `--no-verify`.
+
+## Working practices
+
+**Documentation first:** record user decisions in PRD and specs. Label proposed defaults clearly; distinguish user approval from draft technical choices.
+
+**One question at a time:** continue discussions incrementally rather than batching open questions.
+
+**No credentials in documents:** never add real passwords, tokens or secrets to markdown, source, logs or command arguments. `npm run db:seed -- --password` and `tools/mail-check/check.mjs` both prompt interactively for exactly this reason.
+
+**Claimed status is not evidence.** Distinguish proposed, implemented, locally verified and deployed. Re-run the gate rather than trusting a document that says it passed.
+
+**Document age matters.** `docs/brand.md` supersedes the navy/blue description in the first half of `docs/ui-direction.md`. `docs/superpowers/specs/2026-09-17-local-replatform-design.md` supersedes every earlier stack decision. When documents disagree, the later evidence document wins — and fix the stale one.
+
+**Traceability:** PRD `R01`–`R28` are the canonical IDs. Spec acceptance scenarios cite them; tasks `T001`–`T028` implement them. A requirement change touches all four documents plus `docs/foundation.md` if a boundary moves.
 
 ## Essential documents (read in order)
 
@@ -49,256 +230,23 @@ write code that assumes one exists.
 2. `docs/engineering-standards.md` — mobile-first, test-first, type/lint policy, definition of done
 3. `docs/git-workflow.md` — commit/push rules, binding on every agent
 4. `docs/foundation.md` — core purpose, people, scale, boundaries
-5. `docs/PRD.md` — product requirements with canonical requirement IDs (R01–R27)
+5. `docs/PRD.md` — product requirements with canonical requirement IDs
 6. `.specify/memory/constitution.md` — architectural principles and governance
 7. `specs/001-email-ticketing/spec.md` — feature specification with acceptance scenarios
-8. `specs/001-email-ticketing/plan.md` — provisional technical plan with feasibility gates
-9. `specs/001-email-ticketing/tasks.md` — implementation tasks (T001–T028, none complete)
-10. `docs/stack-validation.md` — what has actually been tested against Zimbra and Cloudflare
-11. `docs/brand.md` — current palette, typography, contrast measurements
-12. `docs/ui-direction.md` — UI decisions and prototype instructions
+8. `specs/001-email-ticketing/plan.md` — technical plan
+9. `specs/001-email-ticketing/tasks.md` — implementation tasks
+10. `docs/superpowers/specs/2026-09-17-local-replatform-design.md` — the current stack and why
+11. `docs/stack-validation.md` — what has actually been tested, including everything Cloudflare cost
+12. `docs/brand.md` — palette, typography, contrast measurements
+13. `docs/ui-direction.md` — UI decisions and prototype instructions
 
-**Traceability:** PRD `R01`–`R28` are the canonical IDs. Spec acceptance scenarios cite them; tasks `T001`–`T028` implement them. A requirement change touches all four documents plus `docs/foundation.md` if a boundary moves.
+## Unresolved
 
-**Document age matters.** `docs/brand.md` supersedes the earlier navy/blue description in the first half of `docs/ui-direction.md`. `docs/stack-validation.md` supersedes the PRD's "Open points" on mail verification. When documents disagree, the later evidence document wins — and fix the stale one.
-
-**Claimed status is not evidence.** Distinguish proposed, implemented, locally verified and deployed. Re-run the gate rather than trusting a document that says it passed.
-
-## Key constraints
-
-These are product rules from the PRD, not descriptions of working code. The dashboard-only IT workflow, the notification set, the delivery-gated transitions, manual closure, the bounce pause and account-disabling redistribution were approved on 16 September 2026 and none of them is implemented — see the PRD's “Approved 16 September 2026 — not implemented” section.
-
-- **Email domain:** Only `@allcheckservices.com` senders to `support@allcheckservices.com`
-- **Work calendar:** Mon–Sat, 09:00–18:00 Asia/Kolkata (UTC+5:30)
-- **Response deadline:** 4 working hours; Sunday messages due Monday 12:00
-- **Assignment:** Fewest open tickets among available staff; round robin for ties
-- **Statuses:** New, In Progress, Waiting for Employee, Resolved, Closed
-- **Delivery-gated transitions (R28):** Waiting for Employee and Resolved take effect only when the outgoing mail server accepts the required public reply; until then status, deadlines and reminders are unchanged. The 72-hour auto-close clock starts at that acceptance. IT may also close a Resolved ticket manually, and either closure route leaves the ticket Resolved until the closure email is accepted. A later resolution bounce alerts assignee and admin and pauses auto-close until delivery is fixed.
-- **Attachments:** 5 MB total per email
-- **Backups:** Daily at 02:00 IST, 30-day retention
-- **Staff availability:** Admin-only control; unavailable staff have tickets redistributed
-- **Account disabling:** Admin-only; ends dashboard access and redistributes open tickets by the same assignment rules. Resolved/Closed tickets keep their historical owner
-
-## Commands
-
-All frontend work happens in `prototype/`:
-
-```bash
-npm ci                    # Install dependencies
-npm run dev               # Preview server on http://127.0.0.1:5173
-npm run verify            # The gate: typecheck + lint + format + unit + smoke + build
-npm run typecheck         # tsc --noEmit
-npm run lint              # eslint . --max-warnings 0
-npm run format            # prettier --write .
-npm run format:check      # prettier --check .
-npm test                  # Browser smoke test (see below)
-npm run test:unit         # vitest run — domain suites under src/domain/
-npm run build             # tsc + vite build
-```
-
-`npm run test:unit` is part of `verify`, ahead of the slow browser test so a domain failure surfaces in seconds. CI inherits it by running `verify`. Vitest exits non-zero when it finds no test files, so never leave `src/domain/` without a suite.
-
-Prettier owns formatting for everything except `node_modules`, `dist` and `package-lock.json`. Run `npm run format` after editing — an unformatted file fails the gate at `format:check`, before the tests ever run.
-
-## The worker
-
-The backend lives in `worker/` and is its own npm package with its own gate:
-
-```bash
-cd worker
-npm ci
-npm run verify        # typecheck + lint + format:check + unit tests + dry-run
-npm run test:unit     # vitest run
-npm run lint          # eslint . --max-warnings 0
-npm run format        # prettier --write .
-npm run deploy        # wrangler deploy (prefer Workers Builds)
-```
-
-The gate matches the prototype's: strict type-aware ESLint, zero warnings, no explicit
-`any`, no non-null assertions, Prettier-enforced formatting (T028).
-
-**Module layout.** Pure logic is kept out of the transport modules deliberately —
-`cloudflare:sockets` cannot be imported outside the Workers runtime, so anything sharing a
-file with it becomes permanently untestable.
-
-| Module | Responsibility | Pure? |
-| --- | --- | --- |
-| `domain.ts` | Sender authorisation, address extraction, HTML to text | Yes |
-| `mime.ts` | RFC 5322 building, header-injection refusal, dot-stuffing, stored-row validation | Yes |
-| `smtp.ts` | SMTP reply parsing, `SmtpError` | Yes |
-| `smtp-transport.ts` | The Gmail SMTP dialogue | No — sockets |
-| `acknowledgement.ts` | R02 acknowledgement composition | Yes |
-| `outbox.ts` | Retry, backoff, permanence, abandonment, ambiguity | Yes |
-| `threading.ts` | Reply → existing ticket, by Message-ID | Yes |
-| `autoreply.ts` | RFC 3834 and legacy auto-reply detection | Yes |
-| `bounce.ts` | Delivery-failure detection and id extraction | Yes |
-| `auth.ts` | Admin token comparison, fails closed | Yes |
-| `imap.ts` | Mailbox reading, body-part selection | No — network |
-| `store.ts` | All D1 access | No — database |
-| `index.ts` | `scheduled()` + token-gated `fetch()`; wires the above | No |
-
-**Things that cost real debugging time, recorded so they are not rediscovered:**
-
-- A **single-part** message has no part identifier. Address `"TEXT"`, or `download()`
-  returns the entire raw message including headers.
-- Fetching a **UID range** stalls under `nodejs_compat`; a single UID does not.
-- `bodyParts` returns raw transfer encoding; `download()` decodes.
-- `References` is **not** in the IMAP envelope and must be requested, and it arrives
-  folded across indented lines — dropping continuations loses half the thread.
-- `Buffer` does not resolve here (`@types/node` is deliberately absent; this runs on
-  workerd), so imapflow's `headers` is error-typed. Validate the shape, do not trust it.
-
-**Correctness properties worth not breaking:**
-
-- `ingest_log.uid` and `outbox.message_id` are both `UNIQUE`. They are what stop one email
-  opening two tickets, and one ticket sending two acknowledgements.
-- The acknowledgement is enqueued in the **same D1 batch** as the ingest log entry. Queue
-  it afterwards and a crash in between leaves a ticket nothing will ever acknowledge.
-- `claimNextIntent` is a compare-and-swap (`WHERE ... AND state = 'pending'`, then check
-  `meta.changes`). D1 has no `SELECT ... FOR UPDATE`; that conditional write is the lock.
-- A send whose outcome is unknown becomes `ambiguous` and waits for a human. Resending
-  risks a duplicate to a real person; dropping it risks silence (PRD open point 4).
-- Bounces are classified **before** auto-replies. A bounce has a null return path, so the
-  auto-reply test matches it too, and misfiling one loses a delivery failure R15 needs.
-
-**Ingestion is driven by the `Ticker` Durable Object, not by cron.** Cloudflare's cron
-triggers do not fire on this account (measured with a probe worker that had no HTTP
-surface at all). The alarm reschedules itself every two minutes and, being
-single-threaded, gives the mutual exclusion cron never did. Control it through the
-token-gated `/ticker`, `/ticker/start` and `/ticker/stop` routes. It reschedules *before*
-doing its work — reverse that and one failed poll ends the chain forever.
-
-**Known gaps:** nothing restarts the ticker chain if it stops (no watchdog); bounce
-*matching* is unreliable because `readBody` extracts the human-readable part of a report
-rather than the quoted original; `store.ts` and `index.ts` have no integration tests; no
-assignment, no dashboard connection, and staff auth is still blocked on the Workers
-PBKDF2 cap.
-
-### Deploying
-
-Deploys are owned by **Cloudflare Workers Builds**, which pulls this repository directly.
-Nothing deploys from GitHub Actions, and **no Cloudflare credential is stored in GitHub** —
-that is the reason for this choice over a token-based Actions deploy.
-
-Build configuration, set in the Cloudflare dashboard on `simpletickets-api`:
-
-| Setting | Value |
-| --- | --- |
-| Root directory | `worker` |
-| Build command | `npm run verify` |
-| Deploy command | `npx wrangler deploy` |
-| Build watch paths | `worker/*` |
-
-**The watch path is load-bearing, not tidiness.** A Cloudflare schedule change takes up to
-15 minutes to propagate globally and every deploy restarts that clock, so building on
-documentation commits would keep the ingestion cron permanently inside a propagation
-window. Do not widen it. This is not hypothetical: it invalidated a night of cron
-measurements.
-
-The build command is the gate, so a red gate fails the build and never deploys. Secrets
-already set with `wrangler secret put` are preserved across deploys and are not managed by
-the build — never put them in `wrangler.toml` or any workflow file.
-
-`.github/workflows/worker-quality.yml` runs the same gate on push **and pull requests**,
-which the deploy path does not cover. It never deploys.
-
-Local deploys still work: `npm run deploy` in `worker/`, with wrangler's own OAuth login.
-
-## Connecting the dashboard to real data
-
-The dashboard shows built-in **sample data** unless a backend is configured. That
-fallback is load-bearing: the browser smoke test drives the UI by its labels and asserts
-exact row counts against the `seed` array, and a design review has to work without a
-backend.
-
-To see real tickets, create `prototype/.env.local` (git-ignored, and the pre-commit hook
-refuses to stage any `.env` file):
-
-```
-VITE_API_URL=https://simpletickets-api.simpleticketssupport.workers.dev
-VITE_ADMIN_TOKEN=<contents of worker/.admin-token>
-```
-
-**This is not safe for staff use, and the limit is worth understanding before anyone is
-given the URL.** `VITE_` variables are baked into the browser bundle, and there is one
-shared admin token — so anyone who can open the dashboard has full API access, and the
-server cannot tell one staff member from another. Nothing the dashboard records is an
-audit trail of who did what. It is fine for a local review build against test data.
-Per-person sign-in is R06, blocked on the Workers PBKDF2 cap.
-
-A configured API that **fails** shows an error and no tickets — deliberately never sample
-data. Invented tickets displayed when the real ones could not be loaded would have IT
-working a queue that does not exist. The banner always states which mode is active,
-because a dashboard that looks identical connected or not is how someone replies to a
-ticket they think is a demo.
-
-Browser calls need CORS, which the worker attaches once at the `/api/` boundary.
-Origins are allow-listed in `worker/src/cors.ts` — add one there if the dashboard is ever
-served from somewhere new, and do not switch it to reflecting arbitrary origins.
-
-## The smoke test
-
-`prototype/checks/smoke.mjs` is a single linear Playwright script, not a test runner: no watch mode, no filters, no way to run one case. It starts **its own Vite server on port 5174** (`strictPort`), so it does not touch a preview server on 5173 — but two concurrent smoke runs will collide on 5174.
-
-It walks the whole prototype (filters, empty state, reply/status mapping, draft isolation, internal notes, template creation, responsive widths) and throws on the first failure or any browser console error.
-
-Couplings to respect:
-- It asserts **exact row and item counts** against the `seed` and `initialTemplates` arrays in `main.tsx`. Changing that sample data breaks the test — update both together.
-- It **overwrites** `dashboard-preview.png`, `ticket-preview.png` and `mobile-preview.png` in `prototype/`. Those screenshots are outputs of a smoke run, not hand-made assets.
-- Locally it launches `channel:"chrome"`, so real Google Chrome must be installed. Under `CI=true` it uses Playwright's bundled Chromium instead.
-
-## Prototype conventions
-
-`src/main.tsx` is one ~960-line Prettier-formatted file. It was originally written in a minified single-line style; that is gone. **Do not re-minify it** — Prettier is the enforced format.
-
-- No router. Navigation is a `page` string in `useState`; all views are conditional expressions in one `App` return.
-- All state is a `useState` cluster at the top of `App`. Sample data (`seed`, `initialTemplates`, `statuses`, `staff`) sits above it as module constants.
-- The composer keeps `replyDraft` and `noteDraft` separate, with `draft`/`setDraft` selected by the `note` flag. Keep them separate: a shared draft lets an internal note land in the public reply box, which R13 and Constitution III forbid.
-- Fluent brand tokens are overridden inline in the `FluentProvider` theme object (burnt orange `#B54720`), separately from the CSS files.
-- CSS is **append-only override layers**: `style.css` holds successive design iterations, each block overriding the last, and `brand.css` is imported after it so its tokens win. To change the palette, edit `brand.css` and the `FluentProvider` theme — not the older blocks in `style.css`.
-- The prototype CSS is still desktop-first. New work is mobile-first from 360 px per `docs/engineering-standards.md`; migrating the existing sheets is task T028, not a side effect of an unrelated change.
-
-## Git
-
-`docs/git-workflow.md` is binding. The two rules that override Claude Code defaults:
-
-- **Never add AI attribution to a commit message.** No `Co-Authored-By:` naming a model or assistant, no "Generated with", no tool name, no robot emoji. The author is `mayur2605` and nothing else. This applies to pull request descriptions too.
-- **`npm run verify` must exit 0 before you commit** — 0 TypeScript errors, 0 ESLint errors *and* warnings, 0 Prettier issues, smoke PASS, build clean. Never reach green by weakening a rule.
-
-Also: check `.gitignore` and `git status --short` before staging, never commit a credential, and push only when asked.
-
-Hooks in `.githooks/` enforce part of this automatically — enable them once per clone with `git config core.hooksPath .githooks`. They are a safety net, not the gate: `npm run verify` is still yours to run. Never use `--no-verify`.
-
-## Working practices
-
-**Documentation first:** Record user decisions in PRD and specs. Label proposed defaults clearly; distinguish user approval from draft technical choices.
-
-**One question at a time:** Continue discussions incrementally rather than batching open questions.
-
-**No credentials in documents:** Never add real passwords, tokens, or secrets to markdown files, source, logs, or command arguments. `tools/mail-check/check.mjs` prompts for the mailbox password interactively; never pass it as an argument.
-
-**Spec Kit workflow:** This project follows GitHub Spec Kit's constitution → specification → plan → tasks pattern. These are manually authored; Spec Kit CLI is not installed yet (T002).
-
-**Prototype limitations:** In-memory data, resets on refresh, no backend, fixed admin identity, sample due-date strings rather than a running clock, no permission enforcement. It sends no mail, so its status changes apply immediately and model none of the R28 delivery gating. UI controls demonstrate layout and flow, never authorization or backend correctness.
-
-**Constitution principles (excerpt):**
-- Email is the employee interface; no employee accounts required
-- Mail ingestion is retryable and deduplicated
-- Internal notes never reach employee email
-- Persist UTC timestamps; evaluate business time in Asia/Kolkata
-- Test constraints before choosing infrastructure
-- Evidence before release: test round-trip emails, backup restore, authentication
-- No external communication or production deployment is authorized by these documents; sending test mail requires explicit user authorization naming sender and recipients
-
-## Unresolved items
-
-- **Sending works.** Gmail SMTP, using the App Password already used for ingestion. Real acknowledgements have been sent and accepted (`250` with Gmail queue ids). R13's IT replies and R15's failure visibility are still unbuilt, but no longer blocked on transport.
-- **Cloudflare cron triggers do not fire on this account.** Confirmed with a probe worker that had no HTTP surface, so only the scheduler could have run it; it never did. Replaced by the `Ticker` Durable Object alarm, which works. See `docs/stack-validation.md`.
-- **Replies go out from the Gmail address.** Inbound is solved — `support@allcheckservices.com` forwards to `simpleticketssupport@gmail.com` and the original sender survives the hop — but an employee who writes to the company address is answered by a `gmail.com` one. Needs Gmail "send as" or Workspace on the domain. PRD open point 5.
-- **The dashboard reads none of this.** Connecting the prototype to D1 is not started.
-- R06 staff password hashing: Workers WebCrypto caps PBKDF2 at 100,000 iterations against current guidance of 600,000. Needs WebAssembly Argon2id/bcrypt or an explicit recorded acceptance.
+- **Ingestion has not yet been proved on this stack.** The pipeline is ported and tested, and the database holds byte-identical content to the deployed system's, but the end-to-end acceptance test — empty database, pointed at the real mailbox, rebuilding the same tickets — needs `GMAIL_APP_PASSWORD` in `server/.env`. Cloudflare secrets are write-only and cannot be read back.
+- **Production hosting is undecided**, by choice.
+- **Replies go out from the Gmail address**, not the company one. PRD open point 5.
 - **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.
-- Backup storage provider and restore procedures not finalized; D1 Free gives 7 days of Time Travel against the agreed 30-day window, so separate exports are required
-- CPU limits for MIME parsing and 5 MB attachments not measured
-- What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity detection (open point 4)
-- ESLint pinned at 9 (jsx-a11y peer ceiling) though npm marks 9 out of support; TypeScript pinned to 6.0.2 for typed-ESLint compatibility
+- **Bounce matching is unreliable**: `readBody` extracts the human-readable part of a delivery report rather than the quoted original, so `bouncedMessageIds` often has nothing to match on.
+- **Login leaks account existence by timing**, accepted and recorded — see `docs/stack-validation.md`.
+- CPU and memory cost of MIME parsing for 5 MB attachments is not measured.
+- What an employee reply should do to a transition whose required email is not yet accepted (PRD open point 3); SMTP acceptance-ambiguity detection (open point 4).

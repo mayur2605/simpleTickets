@@ -1,5 +1,10 @@
 node_modules/
 dist/
+
+# Server runtime data: archived raw messages, attachments, database backups and
+# one-off exports. Real employee mail and real attachments live here - it is
+# never committed, and it is what the daily backup exists to protect.
+server/var/
 .env
 .env.*
 !.env.example

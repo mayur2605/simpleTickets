@@ -1,41 +1,61 @@
-# Provisional Technical Plan
+# Technical Plan
 
-> **Mailbox correction, 17 September 2026.** The IMAP-polling design in this plan is
-> current and is being implemented — but **not against Zimbra**. A Cloudflare Worker
-> cannot reach `mail.allcheckservices.com` on 993, 465 or 587. The mailbox is now
-> `simpleticketssupport@gmail.com` over Gmail IMAP with an App Password. Read
-> "Architecture decision" in `AGENTS.md` before implementing ingestion. Every reference
-> below to Zimbra as the ingestion or submission host is withdrawn; the surrounding
-> polling, threading, idempotency and delivery-gating design stands. SMTP submission has
-> **no host at all** right now — see PRD open point 6.
+> **Status, 17 September 2026: implemented.** This was a proposal subject to a feasibility
+> gate. The gate has been run, it failed on Cloudflare, and the stack moved. The
+> processing, threading, idempotency and delivery-gating design below is unchanged and is
+> what `server/` implements — that design was never the problem. Only the runtime changed.
+>
+> Read `docs/superpowers/specs/2026-09-17-local-replatform-design.md` for why, and
+> `docs/stack-validation.md` for the measurements.
 
+## Architecture, as built
 
-Status: proposal, subject to feasibility tests and remaining product clarifications. It reflects the decisions approved on 16 September 2026 (PRD, “Approved 16 September 2026 — not implemented”); none of them is built.
+- **Frontend:** React 19 + TypeScript + Vite + Fluent UI v9. Built output is served by the
+  server itself, so the API is same-origin: the session cookie works with no CORS and the
+  browser bundle carries no credential.
+- **Backend:** one Node 24 process. HTTP via Hono, the two-minute mail loop via
+  `setInterval`, both sharing one connection pool.
+- **Database:** PostgreSQL 18 for tickets, messages, accounts, sessions, mail checkpoints,
+  deadlines, the outbox and the attachment index.
+- **Files:** the local filesystem under `STORAGE_DIR` for attachments and for the raw
+  RFC822 source of every message examined; `BACKUP_DIR` for nightly `pg_dump` output.
+- **Mail:** Gmail IMAP and SMTP with an App Password, reaching
+  `simpleticketssupport@gmail.com`, which `support@allcheckservices.com` forwards to.
 
-## Candidate architecture
+No cloud dependency of any kind. Production hosting is deliberately undecided — a plain
+Node application deploys anywhere, so nothing is lost by deferring it.
 
-- Frontend: React + TypeScript + Vite + Fluent UI, as validated in the interactive prototype. Backend hosting remains subject to feasibility tests.
-- Cloudflare Workers for API and scheduled jobs; static assets for dashboard.
-- D1 for tickets, messages, accounts, reply templates, audit events, mail checkpoints, deadlines and outbox.
-- Private R2 storage for attachments and potentially encrypted backup exports.
-- Existing Zimbra mailbox via secure IMAP ingestion and authenticated SMTP submission; local verified TLS connectivity confirmed on IMAP 993 and SMTP 465; user-reported local authentication PASS; delivery and Cloudflare compatibility unverified.
+## How the feasibility gate resolved
 
-This is a candidate, not a final stack selection. Do not change company mail routing or MX records as part of a prototype.
+Each item was a real question. All six are now answered with evidence.
 
-## Mandatory feasibility gate
-
-1. Validate TLS IMAP and SMTP from the proposed runtime using a test mailbox. Cloudflare blocks outbound SMTP port 25; assess the server's authenticated submission support on 465/587 without assuming either is enabled.
-2. Verify IMAP/SMTP client compatibility, polling/reconnection, message parsing, attachment size limits and CPU/memory use on Workers Free. It has a 10 ms CPU allowance per invocation; low daily traffic alone does not prove suitability.
-3. Benchmark secure password verification and email parsing. Do not weaken password hashing to meet the free CPU allowance.
-4. Verify two-minute scheduling, overlapping-run exclusion, retries and quota consumption.
-5. Confirm R2 activation/billing requirements, D1 per-database limits, backup storage and recovery features before quoting a zero-cost deployment.
-6. If native mail handling cannot meet requirements, compare a small mail bridge or inexpensive hosted service with the user. Do not silently add infrastructure.
+1. **TLS IMAP and SMTP from the runtime.** Failed on Cloudflare for Zimbra — the mail host
+   dropped Workers traffic on 993, 465 and 587, while `imap.gmail.com:993` connected from
+   the same Worker in 68 ms. Passed for Gmail, which is what shipped. Worth retesting
+   Zimbra from this machine: the constraint was Cloudflare's origin, and it is gone.
+2. **Client compatibility, parsing, attachment limits, CPU.** The 10 ms CPU allowance and
+   the `nodejs_compat` quirks (stalled UID ranges, absent `Buffer`) are moot. Attachment
+   CPU and memory for 5 MB messages is still **not measured** — it is the one item here
+   that remains genuinely open.
+3. **Benchmark password verification, without weakening hashing.** Answered twice. On
+   Workers the cap forced chained PBKDF2 at ~124 ms. On Node it is scrypt — memory-hard,
+   64 MB per guess, 252 ms measured. The hashing was strengthened, not weakened.
+4. **Two-minute scheduling, overlapping-run exclusion, retries.** Cloudflare cron never
+   fired on this account at all. `setInterval` plus the `Ticker`'s `#running` flag gives
+   the schedule and the mutual exclusion; `FOR UPDATE SKIP LOCKED` gives the outbox the
+   lock D1 could not.
+5. **R2/D1 limits, backup and recovery.** Moot. `pg_dump` nightly with 30-day retention,
+   and a test that restores a real dump into an emptied database. **Still open:** the
+   backups sit on the same disk as the database.
+6. **Compare alternatives rather than silently adding infrastructure.** This is what
+   happened: four mail transports were tried and closed with evidence, and the runtime was
+   replaced rather than worked around further.
 
 ## Processing design
 
 At initial activation, persist the launch time, mailbox UIDVALIDITY and UIDNEXT boundary before processing; skip earlier mailbox messages without changing them. Persist the cutoff across restarts, catch up after downtime, and explicitly reconcile UIDVALIDITY changes without importing pre-launch mail. Use server arrival identity rather than the sender-controlled Date header for the launch boundary. Use mailbox UIDVALIDITY and UID plus stable message identity to deduplicate; persist checkpoints only after durable processing. Do not mark mail as handled before database and attachment results are durable. Bound message size before parsing. Quarantine malformed mail with a visible error for IT.
 
-Match replies using stored Message-ID, In-Reply-To and References plus participant authorization. Use per-ticket routing identifiers if supported. Suppress autoresponder/bounce loops. Establish trusted Zimbra authentication evidence; do not trust a user-supplied From domain or forged Authentication-Results header on its own. Ingestion accepts employee and eligible CC participant mail only: there is no staff-mail path, so a staff member's own message to the support mailbox is handled like any other unauthorized sender, and a reply to an IT notification produces no ticket message. Send IT notifications from an address that does not feed ingestion, or with a reply-to that makes the dead end obvious, and suppress loops either way.
+Match replies using stored Message-ID, In-Reply-To and References plus participant authorization. **Implemented, with one addition the plan did not anticipate:** threading deliberately ignores a notification's own Message-ID. IT staff are on the approved sender domain, so a staff member replying to a one-way notification produces a message indistinguishable from the employee's, and it would otherwise be appended to the ticket — restarting the response clock and reopening a resolved ticket. Use per-ticket routing identifiers if supported. Suppress autoresponder/bounce loops. Establish trusted Zimbra authentication evidence; do not trust a user-supplied From domain or forged Authentication-Results header on its own. Ingestion accepts employee and eligible CC participant mail only: there is no staff-mail path, so a staff member's own message to the support mailbox is handled like any other unauthorized sender, and a reply to an IT notification produces no ticket message. Send IT notifications from an address that does not feed ingestion, or with a reply-to that makes the dead end obvious, and suppress loops either way.
 
 In one atomic database operation, record the ticket/message change and enqueue its outbound email intents. Use separate delivery processing with retries and a stable identifier. SMTP disconnect after acceptance can create delivery ambiguity; surface that state rather than claiming exactly-once mail delivery. Keep inbound employee messages, outgoing public replies and outbound IT notifications distinguishable.
 
@@ -49,11 +69,14 @@ Store a response episode anchored to first unanswered employee message, next rem
 
 ## Security and operations
 
-Separate staff login from Zimbra. Secure password hashing, hashed single-use email challenges, throttled attempts, secure HttpOnly cookies, CSRF protection, session invalidation and account recovery need implementation. Store mailbox secrets outside source control. Private attachments require server-side authorization, safe names and download headers. Audit security/admin events in addition to required ticket changes.
+Separate staff login from Zimbra. **Built:** scrypt password hashing with parameters recorded in each stored value, per-account throttling with a lockout window, HttpOnly/Secure/SameSite=Strict cookies whose tokens are stored hashed, expiry swept on each new session, and sign-out that deletes the session row. SameSite=Strict is the CSRF defence. **Not built:** hashed single-use email challenges and account recovery — an admin resets a password, and the first one is set from the command line because no API path may mint the first credential. Store mailbox secrets outside source control — `server/.env`, git-ignored, and the pre-commit hook refuses to stage any `.env` file. Private attachments require server-side authorization, safe names and download headers. Audit security/admin events in addition to required ticket changes.
 
-Notification emails to IT carry a dashboard deep link to the ticket and no internal-note content; the link lands on authentication, never on ticket content, when the recipient has no session. Expose last successful mailbox poll, failed outgoing mail, pending transitions blocked on delivery, bounce-paused closures, unassigned tickets and storage usage to admin. Run backups daily at 02:00 IST with 30-day recovery-point retention. Back up the database and actual attachment bytes with a verified manifest. Use incremental immutable attachment copies to avoid storing 30 full duplicates while preserving every retained recovery point. Keep backups separately protected from production deletion permissions; storage provider and cost remain unverified. Alert admin on failure and preserve the last usable recovery point. Document restoration and test a full database-and-attachment restore before launch. Target at most 24 hours of data loss under successful daily operation; measure recovery time before committing to a restore-time target. Indefinite retention applies to production records, not an unlimited count of backup copies.
+Notification emails to IT carry a dashboard deep link to the ticket and no internal-note content; the link lands on authentication, never on ticket content, when the recipient has no session. Expose last successful mailbox poll, failed outgoing mail, pending transitions blocked on delivery, bounce-paused closures, unassigned tickets and storage usage to admin. Run backups daily at 02:00 IST with 30-day recovery-point retention. **Built for the database** (`pg_dump --format=custom`, pruned by age, restore exercised by a test). **Not built for attachment bytes:** they live on disk under `STORAGE_DIR` and are not yet copied anywhere, so a disk loss takes them. Attachment backup and an off-machine copy of both are the remaining work here. Use incremental immutable attachment copies to avoid storing 30 full duplicates while preserving every retained recovery point. Keep backups separately protected from production deletion permissions; storage provider and cost remain unverified. Alert admin on failure and preserve the last usable recovery point. Document restoration and test a full database-and-attachment restore before launch. Target at most 24 hours of data loss under successful daily operation; measure recovery time before committing to a restore-time target. Indefinite retention applies to production records, not an unlimited count of backup copies.
 
 ## Sources checked 16 September 2026
+
+These describe the Cloudflare stack and are retained as the record of why it was rejected,
+not as current architecture.
 
 - [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/): free 100,000 requests/day, 10 ms CPU/invocation.
 - [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/): free 5 GB total account storage; check separate per-database limits.
@@ -61,4 +84,5 @@ Notification emails to IT carry a dashboard deep link to the ticket and no inter
 - [TCP sockets](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/): outbound port 25 blocked.
 - [Spec Kit](https://github.com/github/spec-kit): specification-driven project workflow.
 
-Local unauthenticated Zimbra connectivity checks have run: TLS verification passed on ports 993 and 465. The user subsequently reported PASS for the local IMAP/SMTP authentication checker. No message sending or Cloudflare account tests have run. See [validation evidence](../../docs/stack-validation.md). D1 Free is limited to 500 MB per database and seven days of native Time Travel; separate exports are required for the agreed 30-day backup window.
+See [validation evidence](../../docs/stack-validation.md) for the full measurement
+history, including everything Cloudflare cost and what replacing it fixed.

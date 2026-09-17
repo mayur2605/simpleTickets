@@ -2,35 +2,92 @@
 
 Internal IT support through email, with a shared dashboard for five IT staff.
 
-Status: requirements draft, 16 September 2026. An interactive frontend prototype is available; the production application and backend have not been implemented or deployed.
+Employees email `support@allcheckservices.com`. Each message opens or updates a ticket. IT
+works in the dashboard and never by email; they receive one-way notifications that link
+back to it.
+
+**Status, 17 September 2026: a complete application that runs locally.** One Node process
+serves the API, serves the dashboard, polls the support mailbox every two minutes, sends
+queued mail, assigns tickets, notifies staff, reminds on overdue responses, closes resolved
+tickets, stores attachments on disk and backs the database up nightly. Staff sign in with
+real per-person credentials.
+
+It has no cloud dependency. An earlier Cloudflare Workers + D1 + R2 deployment was replaced
+on the same day — see
+[the replatform design](docs/superpowers/specs/2026-09-17-local-replatform-design.md) for
+why, and [validation evidence](docs/stack-validation.md) for the measurements.
+
+**One thing is not yet proved:** ingestion has not run end to end on this stack. The mail
+loop needs a Gmail App Password in `server/.env`, and Cloudflare's secrets are write-only,
+so the value cannot be recovered from the previous deployment.
+
+## Running it
+
+Once:
+
+```bash
+brew install postgresql@18 && brew services start postgresql@18
+createdb simpletickets && createdb simpletickets_test
+cd server && npm ci && cp env.example .env    # then add GMAIL_APP_PASSWORD
+npm run db:migrate && npm run db:seed
+npm run db:seed -- --password staff1           # prompts; never pass a password as an argument
+cd ../prototype && npm ci && npm run build
+```
+
+Then:
+
+```bash
+cd server && npm run dev
+```
+
+The dashboard is at `http://localhost:8787`, served from the same origin as the API — so
+the session cookie works with no CORS and the browser bundle carries no credential.
+
+`MAIL_SEND` is off unless it is exactly `on`. Outgoing messages are composed and queued;
+nothing reaches the wire. Leave it off while developing against the real mailbox, or a real
+employee receives a duplicate.
+
+For UI work, also run `npm run dev` in `prototype/` and use `http://localhost:5173`; Vite
+proxies `/api` so the session behaves exactly as it does in production.
+
+## Verifying
+
+Two packages, two gates, both must pass before a commit:
+
+```bash
+cd server    && npm run verify   # typecheck, lint, format, 219 unit + 59 database tests
+cd prototype && npm run verify   # typecheck, lint, format, unit, browser smoke, build
+```
+
+The database tests need PostgreSQL running and refuse any database whose name does not end
+in `_test`, because they truncate.
 
 ## Read in order
 
-1. [Foundation](docs/foundation.md)
-2. [Product requirements](docs/PRD.md)
+1. [Foundation](docs/foundation.md) — purpose, people, scale, boundaries
+2. [Product requirements](docs/PRD.md) — canonical requirement IDs R01–R28
 3. [Project constitution](.specify/memory/constitution.md)
 4. [Feature specification](specs/001-email-ticketing/spec.md)
-5. [Provisional technical plan](specs/001-email-ticketing/plan.md)
+5. [Technical plan](specs/001-email-ticketing/plan.md)
 6. [Implementation tasks](specs/001-email-ticketing/tasks.md)
+7. [Replatform design](docs/superpowers/specs/2026-09-17-local-replatform-design.md) — the current stack and why
+8. [Validation evidence](docs/stack-validation.md) — what has actually been measured
+
+For working on the code: [CLAUDE.md](CLAUDE.md) covers layout, commands and the couplings
+worth knowing; [AGENTS.md](AGENTS.md) and
+[engineering standards](docs/engineering-standards.md) are the binding workflow rules.
 
 ## Spec Kit
 
-These documents follow GitHub Spec Kit's constitution → specification → plan → tasks workflow. They are manually authored project artifacts; the Spec Kit CLI and agent commands are not installed yet. Neither `uv` nor `specify` was available on PATH during setup. Follow the official installation guide and verify the current supported agent integration before initializing into this existing folder. Preserve these authored documents when merging generated templates.
+These documents follow GitHub Spec Kit's constitution → specification → plan → tasks
+workflow. They are manually authored; the Spec Kit CLI is not installed (T002). Preserve
+these authored documents when merging generated templates.
 
-Sources: [GitHub Spec Kit](https://github.com/github/spec-kit), [installation](https://github.github.io/spec-kit/installation.html).
+Sources: [GitHub Spec Kit](https://github.com/github/spec-kit),
+[installation](https://github.github.io/spec-kit/installation.html).
 
 ## Collaboration
 
-Continue one question at a time. Record user decisions in the PRD and specification; clearly label proposed defaults and unresolved implementation details. Do not treat a draft technical choice as user approval. Never put credentials in these documents.
-
-## UI preview
-
-See [UI direction and prototype instructions](docs/ui-direction.md). Run `npm ci` and `npm run dev` in `prototype/` to explore the sample dashboard.
-
-## Engineering standards
-
-Read [engineering standards](docs/engineering-standards.md) and [agent instructions](AGENTS.md) before implementation. Prototype quality gate: `npm run verify` from `prototype/`.
-
-## Takeover review
-
-See [local review and verification](docs/takeover-review.md) and [runtime feasibility acceptance plan](docs/runtime-feasibility.md). The prototype now keeps public and internal-note drafts separate; production tasks remain open.
+Continue one question at a time. Record user decisions in the PRD and specification;
+clearly label proposed defaults and unresolved implementation details. Do not treat a draft
+technical choice as user approval. Never put credentials in these documents.

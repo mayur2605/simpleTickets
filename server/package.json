@@ -1,0 +1,42 @@
+{
+  "name": "simpletickets-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SimpleTickets backend: mail ingestion, ticket store and dashboard API. Node + PostgreSQL, no cloud dependencies.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch src/main.ts",
+    "start": "node --env-file-if-exists=.env src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test:db": "vitest run --config vitest.db.config.ts",
+    "lint": "eslint . --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:migrate": "node --env-file-if-exists=.env src/db/migrate.ts",
+    "db:reset": "node --env-file-if-exists=.env src/db/migrate.ts --reset",
+    "db:seed": "node --env-file-if-exists=.env src/db/seed.ts",
+    "verify": "npm run typecheck && npm run lint && npm run format:check && npm run test:unit && npm run test:db",
+    "db:import": "node --env-file-if-exists=.env src/db/import-d1.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.1",
+    "hono": "4.13.8",
+    "imapflow": "2.0.5",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.5",
+    "@types/pg": "8.23.1",
+    "eslint": "10.10.0",
+    "globals": "17.12.0",
+    "prettier": "3.9.7",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "5.0.1"
+  }
+}

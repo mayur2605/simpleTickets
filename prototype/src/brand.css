@@ -660,3 +660,57 @@ button.brand {
   cursor: pointer;
   font-family: inherit;
 }
+
+/* ---------------------------------------------------------------- sign-in */
+/* Shown only when a server is reachable and nobody is signed in. With no
+   backend the dashboard stays on sample data and never reaches this. */
+.signin {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--surface-sunken, #faf7f5);
+}
+.signin-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 24px 24px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid #ece5e1;
+  box-shadow: 0 12px 32px rgba(58, 28, 15, 0.08);
+}
+.signin-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  color: #fff;
+  background: #b54720;
+}
+.signin-card h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+.signin-card p {
+  margin: -8px 0 4px;
+  color: #6d5f58;
+  font-size: 13px;
+}
+.signin-card small {
+  color: #8a7c74;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* An employee's own message, so it cannot be mistaken for something IT wrote.
+   Distinct from .internal, which marks a note that is never emailed. */
+.conversation .from-employee {
+  border-left: 3px solid #d9c9c0;
+  background: #fcfaf9;
+}

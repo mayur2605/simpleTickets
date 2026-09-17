@@ -1,0 +1,5 @@
+node_modules/
+package-lock.json
+# Runtime data, not source: archived raw messages, attachments, backups and
+# one-off D1 exports. Formatting it would rewrite an employee's actual email.
+var/

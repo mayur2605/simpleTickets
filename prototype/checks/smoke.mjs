@@ -1,5 +1,13 @@
 import { chromium, expect } from "@playwright/test";
 import { createServer } from "vite";
+
+// This test drives the dashboard on its SAMPLE data, and asserts exact row
+// counts against the `seed` array in main.tsx. The dashboard now decides it is
+// live by asking /api/me, so the proxy is pointed at a port nothing listens on:
+// the probe fails, the dashboard stays on sample data, and the test is not
+// quietly coupled to whether a real server happens to be running on 8787.
+process.env.VITE_PROXY_TARGET = "http://127.0.0.1:59999";
+
 const server = await createServer({
   server: { host: "127.0.0.1", port: 5174, strictPort: true },
 });

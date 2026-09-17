@@ -761,6 +761,120 @@ ASIC attack in a way no iteration count does. The stored format is
 stored value, so a memory-hard KDF can replace this later, and the cost can be raised,
 without invalidating anyone's existing password.
 
+## Replatform to Node + PostgreSQL — measured, 17 September 2026
+
+Everything above this heading is a record of what Cloudflare Workers, D1 and R2 could and
+could not do. It stays because it is evidence, and because it is the argument for what
+replaced them. **It no longer describes how this system runs.** The current stack is Node
+24 + PostgreSQL 18 + the local filesystem, decided in
+`docs/superpowers/specs/2026-09-17-local-replatform-design.md`.
+
+### The Durable Object chain stopped, unobserved
+
+Checked while writing this section: the deployed worker still answers HTTP, but its **last
+ingestion was 16 September 2026 at 21:36 UTC** — roughly seven hours before. The `Ticker`
+alarm chain had ended and nothing restarted it.
+
+This is the failure mode recorded above as the reason a watchdog was needed: an alarm chain
+has no safety net, an evicted object or a lost alarm stops everything silently, and silence
+is the only symptom. `.github/workflows/ticker-watchdog.yml` was built to catch exactly
+this, ran every fifteen minutes, and the chain still ended. Whether it failed to detect the
+stall or healed it into another one that also died is not determinable from here, which is
+itself the point: the whole arrangement was a timer outside the platform compensating for a
+platform that could not keep a timer.
+
+`setInterval` in a process that is running does not have this failure mode. If the process
+dies, the process is dead — visible, and something an operating system already knows how to
+restart.
+
+### What the move fixed
+
+Each row below is a problem measured on Workers and recorded earlier in this document.
+
+| Measured on Workers | On Node + PostgreSQL |
+| --- | --- |
+| Cron triggers never fired — proved with a probe worker that had no HTTP surface, so only the scheduler could have run it | `setInterval` in one process |
+| PBKDF2 refused above 100,000 iterations in one `deriveBits` call | `node:crypto` scrypt, memory-hard, no cap |
+| `Date.now()` frozen during synchronous execution, so every in-request timing read 0 ms | a login measures **252 ms**, from a real clock |
+| IMAP **UID range** fetches stalled under `nodejs_compat`; single UIDs worked | ranges work; the single-UID workaround is now a choice, not a necessity |
+| `Buffer` unresolvable, `@types/node` deliberately absent | `Buffer` is present |
+| `cloudflare:sockets` unimportable under vitest, forcing the SMTP split | one file on `node:tls`, fully testable |
+| `store.ts` untestable — the only database was Cloudflare's | **59 integration tests** against real PostgreSQL |
+| D1 free tier: 7 days of Time Travel against an agreed 30-day window | `pg_dump` nightly, retention bounded only by disk, with a **restore test** |
+| Deploy required for every change; schedule changes took 15 minutes to propagate | restart a process |
+
+### Password hashing, re-measured
+
+The Workers figures (373 ms p50 for a hash plus two verifies, taken from `cpuTime`
+analytics because the in-request clock was frozen) are above. On Node the clock works:
+
+| Operation | Measured |
+| --- | --- |
+| `hashPassword` | 252 ms |
+| Two verifies (one correct, one wrong) | 484 ms |
+| Parameters | scrypt N=65536, r=8, p=2 |
+| Peak memory per hash | 64 MB (128 × N × r) |
+
+scrypt is **memory-hard**, which the chained PBKDF2 was not. That is the material change:
+an attacker guessing passwords must now hold 64 MB per guess, which is what defeats the
+GPU and ASIC parallelism no iteration count addresses. N=2¹⁶/r=8/p=2 is one of OWASP's
+listed settings and does the same total work as the more commonly quoted N=2¹⁷/r=8/p=1
+while peaking at half the memory — two sequential passes rather than one large one. Peak
+matters because logins overlap and a memory-hard KDF on an unauthenticated endpoint is a
+memory-hard denial of service if it is unbounded.
+
+The Cloudflare-era `pbkdf2-sha256$6$100000$…` verifier is retained, and there is a test
+that pins a real hash produced by the old implementation. If that test ever fails, a
+person has been locked out of their account.
+
+**The accepted trade-off below still stands, unchanged.** Moving platforms did not change
+the reasoning: it is about what the throttle can and cannot catch, not about how fast the
+KDF is.
+
+### Database content, compared
+
+Live D1 and local PostgreSQL were compared directly after the port:
+
+```
+D1    #7 'New test ticket' mayur.kulkarni@allcheckservices.com New messages=3
+D1    #8 'Ticket test'     mayur.kulkarni@allcheckservices.com New messages=1
+local #7 'New test ticket' mayur.kulkarni@allcheckservices.com New messages=3
+local #8 'Ticket test'     mayur.kulkarni@allcheckservices.com New messages=1
+
+SHA-256 over all message rows:  D1 b30addd0b579aff1 (4 rows)
+                             local b30addd0b579aff1 (4 rows)
+```
+
+Identical. This proves the schema translation and the query layer. It does **not** prove
+ingestion, because these rows were imported rather than re-derived from the mailbox.
+
+### What is still not proven
+
+The acceptance test as designed — an empty local database pointed at the real mailbox,
+independently rebuilding the same tickets — has **not been run**. It needs
+`GMAIL_APP_PASSWORD` in `server/.env`, and Cloudflare secrets are write-only, so the value
+cannot be read back from the deployed worker. Until that runs, "ingestion works on Node"
+is an inference from ported code and passing tests, not a measurement.
+
+### Two bugs the port surfaced
+
+Both were found by tests that could not have been written on the old stack.
+
+**Overdue reminders reached one person.** A reminder goes to the assignee and every admin,
+all built in the same millisecond for the same ticket and kind. The Message-ID was
+`notify.<kind>.<ticket>.<timestamp>`, so every recipient after the first collided on
+`outbox.message_id`'s UNIQUE constraint and was silently dropped — while the code counted
+them as sent. Found by an integration test asserting two recipients. Message-IDs now carry
+a random component, and `enqueueIntent` reports whether it actually inserted.
+
+**A staff reply to a notification would have corrupted a ticket.** IT staff are on the
+approved sender domain, so a reply to a one-way notification arrives indistinguishable
+from the employee's. It would have threaded onto the ticket, restarting the response clock
+and reopening a resolved ticket — which R15 explicitly forbids.
+`findTicketByMessageIds` now refuses to thread on a notification's Message-ID, ingestion
+records such a message as `notification_reply` rather than dropping it, and the
+notification carries `Reply-To: no-reply@` and says so in its text.
+
 ### Accepted trade-off: username enumeration by timing
 
 Login returns early for an unknown account **without** running the KDF. A real account
