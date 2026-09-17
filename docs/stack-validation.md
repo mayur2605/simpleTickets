@@ -769,6 +769,49 @@ replaced them. **It no longer describes how this system runs.** The current stac
 24 + PostgreSQL 18 + the local filesystem, decided in
 `docs/superpowers/specs/2026-09-17-local-replatform-design.md`.
 
+### Ingestion proved on Node + PostgreSQL — 17 September 2026, 10:30 IST
+
+The last unproven claim. Everything before this was ported code and passing tests; this is
+the measurement.
+
+**The test.** An empty `simpletickets_test`, its checkpoint anchored at `lastUid 5` — below
+the first real employee email — and pointed at the live mailbox. Anchoring below is what
+forces a genuine rebuild: with no checkpoint at all, R27's launch cutoff adopts the
+mailbox's current `uidNext` and imports nothing, which would have proved only that the
+cutoff works.
+
+```
+{"examined":7,"created":3,"appended":1,"autoReplies":0,"notificationReplies":0,
+ "bounces":0,"rejected":3,"skipped":0,"attachments":0,"lastUid":12}
+
+  #1 "TEST MAIL TO CREATE TICKET"  mayur.kulkarni@allcheckservices.com  New  1 message
+  #2 "New test ticket"             mayur.kulkarni@allcheckservices.com  New  2 messages
+  #3 "Ticket test"                 mayur.kulkarni@allcheckservices.com  New  1 message
+```
+
+**Compared against what the Cloudflare system produced**, and the two differences are both
+correct rather than tolerated:
+
+| Difference | Why |
+| --- | --- |
+| 3 tickets rebuilt, D1 held 2 | D1's launch cutoff sat *after* uid 6, so it never saw "TEST MAIL TO CREATE TICKET". This run was anchored below it deliberately. R27 working, not a discrepancy. |
+| "New test ticket" has 2 messages here, 3 in D1 | The third is an internal note typed into the dashboard. It was never email, so no mailbox can produce it. |
+
+The inbound messages themselves are identical, body for body, including the threaded reply
+that matched through `outbox` rather than `messages` — a reply quotes the acknowledgement's
+Message-ID, which appears nowhere in `messages`.
+
+Sender authorisation was exercised by real traffic in the same run: uids 8, 11 and 12 were
+recorded `rejected_sender` (GitHub and Google notifications sitting in the same mailbox),
+so three messages were examined, rejected and logged rather than silently dropped.
+
+**`MAIL_SEND` was off throughout.** Acknowledgements were composed and queued; the outbox
+reported `held: true` and opened no SMTP connection. Nothing reached a person.
+
+**Still not proved:** sending from this stack. The SMTP module is ported and unit tested,
+and the Cloudflare build had real acknowledgements accepted with Gmail queue ids, but no
+message has left this machine.
+
 ### The Durable Object chain stopped, unobserved
 
 Checked while writing this section: the deployed worker still answers HTTP, but its **last

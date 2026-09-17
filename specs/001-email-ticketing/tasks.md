@@ -9,12 +9,15 @@ staff, reminds on overdue responses, closes resolved tickets, stores attachments
 the database up nightly. All eight decisions approved on 16 September 2026 are implemented.
 
 **What "built" does and does not mean here.** The server gate passes with 219 unit tests
-and 59 integration tests against real PostgreSQL, and the local database holds
-byte-identical content to what the deployed system held. But ingestion has **not** been
-run end to end on this stack: the mail loop needs `GMAIL_APP_PASSWORD` in `server/.env`,
-which cannot be recovered from Cloudflare because its secrets are write-only. Until that
-runs, every claim below about mail arriving is inherited from the Cloudflare deployment,
-not measured here.
+and 59 integration tests against real PostgreSQL. Ingestion is measured on this stack, not
+inherited: on 17 September 2026 an empty database pointed at the live mailbox independently
+rebuilt the same tickets, including the threaded reply, and logged three unapproved senders
+(`docs/stack-validation.md`).
+
+**Sending is still inherited.** `MAIL_SEND` has never been on here, so every claim below
+about a message reaching a person comes from the Cloudflare deployment. The outbox composes
+and queues correctly and reports `held: true`; no SMTP connection has been opened from this
+machine.
 
 A local prototype privacy regression was fixed and verified; see
 [takeover review](../../docs/takeover-review.md).
@@ -93,9 +96,13 @@ A local prototype privacy regression was fixed and verified; see
   ticket, and that a failed acknowledgement rolls the ticket back rather than leaving one
   that nothing will ever acknowledge. That was impossible under D1, where the only database
   was Cloudflare's.
+  **Proved on this stack, 17 September 2026:** an empty database anchored at `lastUid 5`
+  and pointed at the live mailbox examined 7 messages, created 3 tickets, appended 1 reply
+  and rejected 3 unapproved senders - rebuilding what the previous deployment held, body
+  for body. The launch cutoff was exercised in the same run: the one extra ticket is the
+  message D1's cutoff had excluded.
   **Not done:** downtime catch-up and UIDVALIDITY-change behaviour are still reasoned about
-  rather than tested - both paths need a fake IMAP server, which does not exist yet. And
-  ingestion has not run once on this stack: it needs `GMAIL_APP_PASSWORD`.
+  rather than tested - both paths need a fake IMAP server, which does not exist yet.
 - [~] T011 Implement sender validation, safe body parsing, participant-aware threading and loop suppression. Preserve eligible employee CC recipients for public replies, deduplicate recipients and exclude the support mailbox; restrict CC recipients to the exact allcheckservices.com domain and accept threaded replies from those authorized CC participants. Test external addresses, mixed-case domains, lookalike suffixes, authorized CC replies and unrelated same-domain senders. Implement requester-only email CC additions and IT dashboard participant management, preserve participants omitted from later email headers, and audit explicit additions/removals. Test unauthorized additions, removed-participant replies and future-only notifications to new participants. Verify CC replies reopen Resolved/Closed tickets and follow the same response-timer and Sunday rules as requester replies without postponing existing deadlines.
   Built and unit tested: sender validation against the exact domain; safe body parsing
   including HTML-only mail; threading by `Message-ID`/`In-Reply-To`/`References`, never by

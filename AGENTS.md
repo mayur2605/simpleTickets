@@ -50,11 +50,16 @@ Known IMAP behaviours that cost real debugging time, recorded so they are not re
 - Gmail-composed mail is frequently **HTML-only**; `htmlToText()` in `server/src/domain.ts`
   exists because of this.
 
-**Still unproven on this stack:** ingestion end to end. The pipeline is ported and covered
-by tests, and the local database holds byte-identical content to the deployed system's,
-but the acceptance test — empty database, pointed at the real mailbox, independently
-rebuilding the same tickets — needs `GMAIL_APP_PASSWORD` in `server/.env`. Cloudflare
-secrets are write-only and cannot be read back.
+**Ingestion is proved on this stack.** On 17 September 2026 an empty database, anchored
+below the first employee email and pointed at the live mailbox, independently rebuilt the
+same tickets — including the reply that threads through `outbox` rather than `messages` —
+and recorded three unapproved senders as `rejected_sender`. Measurements in
+`docs/stack-validation.md`.
+
+**Sending is not.** `MAIL_SEND` has never been on here. The outbox composes and queues and
+reports `held: true`; no SMTP connection has been opened from this machine. Turning it on
+means real employees receive mail, so it needs explicit authorization naming sender and
+recipients.
 
 ## Required engineering workflow
 

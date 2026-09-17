@@ -17,9 +17,10 @@ on the same day — see
 [the replatform design](docs/superpowers/specs/2026-09-17-local-replatform-design.md) for
 why, and [validation evidence](docs/stack-validation.md) for the measurements.
 
-**One thing is not yet proved:** ingestion has not run end to end on this stack. The mail
-loop needs a Gmail App Password in `server/.env`, and Cloudflare's secrets are write-only,
-so the value cannot be recovered from the previous deployment.
+Ingestion is proved: on 17 September 2026 an empty database pointed at the live mailbox
+independently rebuilt the same tickets the previous deployment held, including the threaded
+reply. **Sending is not** — `MAIL_SEND` has never been on here, so nothing this server
+composes has reached a person yet.
 
 ## Running it
 

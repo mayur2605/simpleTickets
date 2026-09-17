@@ -242,7 +242,7 @@ Hooks in `.githooks/` enforce part of this — enable them once per clone with `
 
 ## Unresolved
 
-- **Ingestion has not yet been proved on this stack.** The pipeline is ported and tested, and the database holds byte-identical content to the deployed system's, but the end-to-end acceptance test — empty database, pointed at the real mailbox, rebuilding the same tickets — needs `GMAIL_APP_PASSWORD` in `server/.env`. Cloudflare secrets are write-only and cannot be read back.
+- **Sending has not been proved on this stack.** Ingestion has — an empty database pointed at the live mailbox rebuilt the same tickets on 17 September 2026 (see `docs/stack-validation.md`). But `MAIL_SEND` has never been on here, so no message composed by this server has reached a person. The SMTP module is ported and unit tested; that is not the same thing.
 - **Production hosting is undecided**, by choice.
 - **Replies go out from the Gmail address**, not the company one. PRD open point 5.
 - **DMARC policy is undecided**, and what the domain publishes today is not recorded in this repository, which is public. PRD open point 7.

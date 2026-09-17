@@ -33,8 +33,10 @@ process. Production hosting is deliberately a separate, later decision — a pla
 application deploys to an office server, a VM or a PaaS unchanged, so deferring costs
 nothing.
 
-Cloudflare stays deployed and untouched until the local build is proven against the same
-mail, then `worker/` is deleted.
+Cloudflare stayed deployed and untouched until the local build was proven against the same
+mail. That happened on 17 September 2026, and `worker/` was then deleted — it is in git
+history if it is ever needed. The Cloudflare Worker and D1 database themselves still exist
+and are a separate cleanup.
 
 ## Approach: port, not rewrite
 
@@ -150,10 +152,29 @@ it actually inserted, so a suppressed duplicate can no longer be counted as a de
 - Login, session, authorship, the send gate, attachment storage and download all exercised
   against the running server.
 
-## Not yet proven
+## Acceptance test: passed
 
-The acceptance test as designed — empty database, pointed at the real mailbox, rebuilding
-the same tickets independently — needs `GMAIL_APP_PASSWORD` in `server/.env`. Cloudflare
-secrets are write-only, so it cannot be recovered from the deployed worker. Until then the
-local database was populated by `db:import` from a D1 export, which proves the schema and
-the API but not ingestion end to end on this stack.
+Run 17 September 2026, 10:30 IST, once the App Password was supplied.
+
+An empty database, checkpoint anchored at `lastUid 5` — below the first employee email, so
+R27's launch cutoff could not skip the history — pointed at the live mailbox:
+
+```
+examined 7, created 3, appended 1, rejected 3, lastUid 12
+```
+
+It rebuilt the tickets the previous deployment held, body for body, including the reply
+that threads through `outbox` rather than `messages`. Two differences, both correct: one
+extra ticket, because D1's cutoff had sat after that message and this run was anchored
+below it; and one fewer message on "New test ticket", because the third was an internal
+note typed into the dashboard and no mailbox can produce it.
+
+Same mail in, same tickets out, on a different runtime and a different database.
+
+## Still not proven
+
+**Sending from this stack.** `MAIL_SEND` has never been on here — the outbox composes,
+queues and reports `held: true` without opening a socket. The SMTP module is ported and
+unit tested, and the Cloudflare build had real acknowledgements accepted with Gmail queue
+ids, but no message has left this machine. Turning it on means real employees receive mail
+and needs explicit authorization.

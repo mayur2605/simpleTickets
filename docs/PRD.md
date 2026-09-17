@@ -56,9 +56,14 @@ real mail".
 | 7 | A bounce after acceptance alerts and pauses auto-close (R28) | `delivery_failed` notification; `ticketsReadyToClose` excludes a bounced resolution | `autoclose.db.test.ts` |
 | 8 | Redistribution on disabling/unavailability (R05, R08) | `api.redistribute`, re-reading workloads after each move | `store.db.test.ts` |
 
-**Not yet proved end to end:** none of this has run against live mail on the current
-stack. The mail loop needs `GMAIL_APP_PASSWORD`, and `MAIL_SEND` is off by default, so no
-notification has actually been delivered to a person.
+**Half proved end to end.** Ingestion runs on the current stack: on 17 September 2026 an
+empty database pointed at the live mailbox rebuilt the same tickets, threaded the reply
+onto its original, and logged three unapproved senders (`docs/stack-validation.md`).
+
+**The outgoing half is not.** `MAIL_SEND` is off by default and has never been on here, so
+no acknowledgement, reply, notification or reminder composed by this server has reached a
+person. Rows 2, 3, 6 and 7 above are therefore built and tested but unwitnessed in the
+wild, and turning sending on is a decision that needs naming a sender and recipients.
 
 ## Proposed implementation defaults — not additional user decisions
 
